@@ -84,11 +84,27 @@ Commands such as `move-to` and `click` accept `driver`, `win32`, or `set` to cho
 
 Unknown options, missing option values, repeated options, and extra arguments are rejected before a device is opened.
 
-### C API and Python
+### C/C++ SDK
 
-The C header is [include/logi_vhid.h](include/logi_vhid.h). After a release build, the DLL is at `target/release/logi_vhid.dll`, or in the `release/` subdirectory of `CARGO_TARGET_DIR` if set.
+After a release is published, download the Windows x86_64 MSVC SDK ZIP from [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases). It contains the DLL, `logi_vhid.dll.lib` import library, C header, LICENSE, and C/C++ examples. The import library is not the separate Rust `staticlib` file named `logi_vhid.lib`.
 
-The Python module is [python/logi_vhid.py](python/logi_vhid.py). Add the project's `python/` directory to `PYTHONPATH` before importing it. Set `LOGI_VHID_DLL` to use a specific DLL; otherwise, the module searches `target/release/` and then `target/debug/`.
+See [sdk/README.md](https://github.com/lona-cn/logi-vhid/blob/master/sdk/README.md) for linking, runtime requirements, and CMake commands. The examples only exercise error/query calls: they do not open a device or send desktop input. The G HUB driver is not included.
+
+### Python
+
+Python 3.12 or later, Windows x64. After a wheel is published on PyPI:
+
+```powershell
+python -m pip install logi-vhid
+```
+
+You can also install the `.whl` attached to the matching GitHub Release. Wheels include the DLL and need no Rust toolchain. To build and install directly from this source checkout, use `python -m pip install .` with the MSVC Rust toolchain installed.
+
+The DLL requires the Microsoft Visual C++ v14 x64 runtime (`VCRUNTIME140.dll`). If it is missing, install the supported [x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist); the wheel does not install this system component.
+
+The package loads its own `_native/logi_vhid.dll`; it does not search a source checkout's `target` directories. Set `LOGI_VHID_DLL` only when explicitly selecting a different DLL. Do not add the repository to `PYTHONPATH` for an installed package.
+
+The following example sends real input to the desktop:
 
 ```python
 from logi_vhid import LogitechVirtualHid, LEFT, MODE_SET_CURSOR_POS
@@ -125,12 +141,14 @@ The virtual mouse supports relative movement but does not report absolute coordi
 
 ### Testing
 
-The following checks do not send keyboard or mouse input:
+The following checks do not send keyboard or mouse input. Run the Python commands in a virtual environment:
 
 ```powershell
 cargo test --all-targets
 cargo test --doc
-python -B -m unittest discover -s python -p "test_*.py"
+python -m pip install -r tools/requirements-release.txt
+python -B -m unittest discover -s python/tests -p "test_*.py"
+python -B -m unittest discover -s tools -p "test_*.py"
 ```
 
 The hardware test is ignored by default. It moves the cursor and presses/releases F24, then attempts to release test keys and restore the cursor. Run it only when those desktop actions are safe:
@@ -139,20 +157,51 @@ The hardware test is ignored by default. It moves the cursor and presses/release
 cargo test --test hardware -- --ignored --nocapture --test-threads=1
 ```
 
-### Before Publishing
+### Build and Verify Release Packages
 
-Windows CI checks Rust 1.96 and stable without sending desktop input. Documentation examples are compiled but not executed.
+`Cargo.toml` is the version source. A tag must exactly match `v` followed by that version. Stable versions and `-alpha.N`, `-beta.N`, or `-rc.N` versions have corresponding Python versions; build metadata and unsupported forms are rejected.
 
-Before uploading a release:
-
-- Set `package.repository` to the public source repository URL.
-- Review and commit the release contents, then record the commit and version tag.
-- Record the Windows and G HUB versions used for the hardware test, what input you observed, and whether the test left any keys or buttons pressed.
-- Run the following from the reviewed checkout with no uncommitted changes. This checks the crate package without uploading it:
+From the Windows x64 source checkout:
 
 ```powershell
-cargo publish --dry-run --locked --registry crates-io
+python -m venv target/release-tools
+target/release-tools/Scripts/python.exe -m pip install -r tools/requirements-release.txt
+target/release-tools/Scripts/python.exe tools/release.py build --tag v0.1.0 --dist dist
+target/release-tools/Scripts/python.exe tools/release.py verify --tag v0.1.0 --dist dist
 ```
+
+These commands do not create a tag or upload anything. Building requires Rust and MSVC; verification also needs CMake and its C/C++ compiler. The output contains the SDK ZIP, a `py3-none-win_amd64` wheel, `SHA256SUMS`, and draft release notes. One Cargo build supplies the same DLL to both packages. `verify` checks the hashes and metadata, compiles and runs the extracted SDK examples, and installs the wheel with `--no-index --no-deps` into a fresh temporary environment outside the checkout.
+
+`verify-assets` accepts the same arguments and only checks files, versions, hashes, and DLL consistency. It can run on Linux and never builds or loads the DLL. All automatic smoke checks use null-handle/error paths, not real input.
+
+### Publish a Version
+
+After reviewing and committing the release contents:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The tag workflow reuses CI, then builds the final native packages once with Rust 1.96.0. It creates a **draft** GitHub Release with the SDK, wheel, checksums, and verification notes. It will not overwrite an existing release.
+
+Before publishing that draft, record the Windows/G HUB versions, observed real input, and whether all keys/buttons were released. Hosted CI does not perform this hardware verification.
+
+Publishing the GitHub Release triggers a separate Linux job: it downloads and verifies the published files without rebuilding, then passes only that same wheel to the PyPI publishing job. The latter does not check out source or build packages. Its OIDC permission is limited to that job; no long-lived PyPI token is used. Crates.io publishing remains a separate maintainer action; CI only runs `cargo publish --dry-run`.
+
+### One-Time PyPI Setup
+
+Before the first public release, configure a [pending Trusted Publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/) in your PyPI account:
+
+| Field | Value |
+| --- | --- |
+| PyPI project | `logi-vhid` |
+| GitHub owner | `lona-cn` |
+| Repository | `logi-vhid` |
+| Workflow filename | `release.yml` |
+| Environment | `pypi` |
+
+Create the `pypi` environment in the GitHub repository settings; requiring a reviewer is recommended. PyPI account configuration and environment protection rules are not created by these scripts. A pending publisher does not reserve the project name: confirm that your account can publish the project. No PyPI upload can succeed until the matching publisher is configured.
 
 ### License
 
@@ -240,11 +289,27 @@ cargo run --release -- window "Notepad" 100 100
 
 未知选项、缺少选项值、重复选项和多余参数都会在打开设备前报错。
 
-### C 接口和 Python
+### C/C++ SDK
 
-C 头文件见 [include/logi_vhid.h](include/logi_vhid.h)。编译 release 版本后，DLL 位于 `target/release/logi_vhid.dll`；若设置了 `CARGO_TARGET_DIR`，则位于该目录的 `release/` 子目录。
+版本发布后，可从 [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases) 下载 Windows x86_64 MSVC SDK ZIP。包内包含 DLL、`logi_vhid.dll.lib` 导入库、C 头文件、LICENSE 和 C/C++ 示例。导入库不是 Rust 单独生成的静态库 `logi_vhid.lib`，不要混用。
 
-Python 模块见 [python/logi_vhid.py](python/logi_vhid.py)。导入前将项目的 `python/` 目录加入 `PYTHONPATH`。如需指定 DLL，请设置 `LOGI_VHID_DLL`；否则模块会依次查找 `target/release/` 和 `target/debug/`。
+链接方法、运行库要求和 CMake 命令见 [sdk/README.md](https://github.com/lona-cn/logi-vhid/blob/master/sdk/README.md)。示例只调用错误查询等接口，不打开设备、不发送桌面输入。包内不包含 G HUB 驱动。
+
+### Python
+
+需要 Python 3.12 或更新版本、Windows x64。wheel 发布到 PyPI 后，可直接安装：
+
+```powershell
+python -m pip install logi-vhid
+```
+
+也可以安装对应 GitHub Release 附带的 `.whl`。wheel 内置 DLL，安装时不需要 Rust 工具链。从当前源码安装时，先准备 MSVC Rust 工具链，再运行 `python -m pip install .`。
+
+DLL 需要 Microsoft Visual C++ v14 x64 运行库（`VCRUNTIME140.dll`）。如果缺少该运行库，请安装受支持的 [x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)；wheel 不会安装系统运行库。
+
+包默认加载自身的 `_native/logi_vhid.dll`，不再搜索源码目录的 `target`。只有需要明确指定其他 DLL 时才设置 `LOGI_VHID_DLL`；使用已安装的包无需设置 `PYTHONPATH`。
+
+以下示例会向当前桌面发送真实输入：
 
 ```python
 from logi_vhid import LogitechVirtualHid, LEFT, MODE_SET_CURSOR_POS
@@ -281,12 +346,14 @@ C 接口返回的错误字符串由库管理，不要修改或释放。它在当
 
 ### 测试
 
-以下检查不会发送键盘或鼠标输入：
+以下检查不会发送键盘或鼠标输入。Python 命令请在虚拟环境中运行：
 
 ```powershell
 cargo test --all-targets
 cargo test --doc
-python -B -m unittest discover -s python -p "test_*.py"
+python -m pip install -r tools/requirements-release.txt
+python -B -m unittest discover -s python/tests -p "test_*.py"
+python -B -m unittest discover -s tools -p "test_*.py"
 ```
 
 硬件测试默认跳过。它会移动光标并按下、释放 F24，最后尝试释放测试按键并恢复光标。确认当前桌面允许这些操作后再运行：
@@ -295,20 +362,51 @@ python -B -m unittest discover -s python -p "test_*.py"
 cargo test --test hardware -- --ignored --nocapture --test-threads=1
 ```
 
-### 发布前检查
+### 本地构建与验收发行包
 
-Windows CI 会使用 Rust 1.96 和 stable 执行不发送桌面输入的检查。文档示例只编译，不执行。
+版本统一读取 `Cargo.toml`，标签必须是 `v` 加该版本。支持正式版本及 `-alpha.N`、`-beta.N`、`-rc.N` 的 Python 版本转换；不接受 build metadata 或不支持的版本形式。
 
-上传版本前：
-
-- 将公开源码仓库地址写入 `package.repository`。
-- 审查并提交发布内容，记录对应的 commit 和版本标签。
-- 记录硬件测试使用的 Windows、G HUB 版本、实际观察到的输入，以及测试结束后是否仍有按键或鼠标按钮未松开。
-- 在已审查且没有未提交改动的项目目录运行以下命令，检查 crate 包；该命令不会上传：
+在 Windows x64 源码目录运行：
 
 ```powershell
-cargo publish --dry-run --locked --registry crates-io
+python -m venv target/release-tools
+target/release-tools/Scripts/python.exe -m pip install -r tools/requirements-release.txt
+target/release-tools/Scripts/python.exe tools/release.py build --tag v0.1.0 --dist dist
+target/release-tools/Scripts/python.exe tools/release.py verify --tag v0.1.0 --dist dist
 ```
+
+这些命令不会创建标签或上传文件。构建需要 Rust 和 MSVC，验收还需要 CMake 及 C/C++ 编译器。产物包括 SDK ZIP、`py3-none-win_amd64` wheel、`SHA256SUMS` 和草稿发布说明；SDK 与 wheel 复用一次 Cargo 构建得到的同一个 DLL。`verify` 会检查校验和及元数据，编译、运行解包后的 SDK 示例，并在源码目录以外的新临时环境中，用 `--no-index --no-deps` 安装 wheel。
+
+`verify-assets` 使用相同参数，只校验文件、版本、哈希和 DLL 一致性；可在 Linux 运行，不构建或加载 DLL。所有自动冒烟只走空句柄、错误查询等路径，不发送真实输入。
+
+### 发布版本
+
+审查并提交发布内容后，再创建并推送对应标签：
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+标签工作流先复用 CI 检查，再用 Rust 1.96.0 构建一次最终发行包，创建附带 SDK、wheel、校验和及验收说明的 **GitHub 草稿 Release**；不会覆盖已有 Release。
+
+将草稿发布前，需要记录实测的 Windows/G HUB 版本、真实输入结果，以及所有按键、按钮是否已释放。托管 CI 不会执行这项硬件验收。
+
+GitHub Release 发布后，独立的 Linux 任务会下载并校验已发布文件，不重新构建；随后只把同一份 wheel 交给 PyPI 上传任务。上传任务不检出源码或构建包，OIDC 权限仅在该任务启用，不保存长期 PyPI Token。crates.io 仍由维护者单独发布，CI 只做 `cargo publish --dry-run`。
+
+### 首次发布前的 PyPI 配置
+
+首次公开发布前，在自己的 PyPI 账号中配置 [pending Trusted Publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)：
+
+| 字段 | 值 |
+| --- | --- |
+| PyPI 项目 | `logi-vhid` |
+| GitHub owner | `lona-cn` |
+| Repository | `logi-vhid` |
+| Workflow filename | `release.yml` |
+| Environment | `pypi` |
+
+同时在 GitHub 仓库设置中创建 `pypi` environment，建议启用 required reviewers。脚本不会代替你修改 PyPI 账号配置或环境保护规则。pending publisher 不会预留项目名，需要确认账号有权发布该项目；配置匹配之前，PyPI 上传不会成功。
 
 ### 许可证
 

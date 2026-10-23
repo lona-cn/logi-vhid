@@ -2,7 +2,14 @@ name: CI
 
 on:
   push:
+    branches: ["**"]
   pull_request:
+  workflow_call:
+    inputs:
+      skip_release_build:
+        description: The release workflow builds and verifies its own native artifacts.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,6 +31,8 @@ jobs:
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
+      - name: Install release build tooling
+        run: python -m pip install -r tools/requirements-release.txt
       - name: Install Rust toolchain
         run: rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal --component rustfmt --component clippy
       - name: Check formatting
@@ -37,10 +46,14 @@ jobs:
       - name: Build documentation
         run: cargo rustdoc --lib -- -D warnings
       - name: Run Python tests without desktop input
-        run: python -B -m unittest discover -s python -p "test_*.py"
+        run: python -B -m unittest discover -s python/tests -p "test_*.py"
+      - name: Run release tooling tests
+        run: python -B -m unittest discover -s tools -p "test_*.py"
       - name: Build release artifacts
+        if: ${{ !inputs.skip_release_build }}
         run: cargo build --release
       - name: Smoke test command line
+        if: ${{ !inputs.skip_release_build }}
         run: cargo run --release -- help
       - name: Check crates.io package without uploading
         run: cargo publish --dry-run --locked --registry crates-io

@@ -1,11 +1,8 @@
 """Use logi-vhid from Python through ctypes.
 
-Build the library first:
-
-    cargo build --release
-
-Set LOGI_VHID_DLL to load a specific DLL. Otherwise, the module looks for
-target/release/logi_vhid.dll, then target/debug/logi_vhid.dll in the project.
+Install the Windows x86_64 wheel, or build from source with `pip install .`
+and an installed Rust toolchain. The DLL is bundled inside the package.
+Set LOGI_VHID_DLL to load a specific DLL instead.
 """
 
 from __future__ import annotations
@@ -31,13 +28,13 @@ def _find_library() -> str:
     override = os.environ.get("LOGI_VHID_DLL")
     if override:
         return override
-    root = Path(__file__).resolve().parent.parent
-    for relative in ("target/release/logi_vhid.dll", "target/debug/logi_vhid.dll"):
-        candidate = root / relative
-        if candidate.exists():
-            return str(candidate)
+    candidate = Path(__file__).resolve().parent / "_native" / "logi_vhid.dll"
+    if candidate.is_file():
+        return str(candidate)
     raise FileNotFoundError(
-        "logi_vhid.dll not found; run `cargo build --release` or set LOGI_VHID_DLL"
+        f"Bundled DLL not found at {candidate}; reinstall the Windows x86_64 "
+        "logi-vhid wheel, build from source with `python -m pip install .` "
+        "and Rust installed, or set LOGI_VHID_DLL to an existing DLL."
     )
 
 

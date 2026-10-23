@@ -4,6 +4,7 @@ import ctypes
 import importlib.util
 import os
 from pathlib import Path
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -85,17 +86,25 @@ OPERATIONS = (
 )
 
 
+def load_module(native, module_file=None):
+    spec = importlib.util.spec_from_file_location(
+        "logi_vhid_lifecycle_test",
+        Path(__file__).resolve().parents[1] / "logi_vhid" / "__init__.py",
+    )
+    module = importlib.util.module_from_spec(spec)
+    if module_file is not None:
+        module.__file__ = str(module_file)
+    with mock.patch.object(ctypes, "WinDLL", return_value=native, create=True):
+        spec.loader.exec_module(module)
+    return module
+
+
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
         self.native = NativeLibrary()
         # Patch only library discovery/loading. All methods under test are real.
         with mock.patch.dict(os.environ, {"LOGI_VHID_DLL": "controlled-test.dll"}):
-            with mock.patch.object(ctypes, "WinDLL", return_value=self.native, create=True):
-                spec = importlib.util.spec_from_file_location(
-                    "logi_vhid_lifecycle_test", Path(__file__).with_name("logi_vhid.py")
-                )
-                self.module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(self.module)
+            self.module = load_module(self.native)
 
     def start_worker(self, action):
         errors = []
@@ -123,6 +132,53 @@ class LifecycleTests(unittest.TestCase):
     def wait_for(self, event):
         # The deadline only detects a stuck test; the event establishes ordering.
         self.assertTrue(event.wait(5), "worker did not reach its synchronization point")
+
+    def test_default_loads_package_local_dll(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "logi_vhid"
+            bundled = package / "_native" / "logi_vhid.dll"
+            bundled.parent.mkdir(parents=True)
+            bundled.touch()
+            stale = root / "target" / "release" / "logi_vhid.dll"
+            stale.parent.mkdir(parents=True)
+            stale.touch()
+            environment = {key: value for key, value in os.environ.items()
+                           if key != "LOGI_VHID_DLL"}
+            with mock.patch.dict(os.environ, environment, clear=True):
+                module = load_module(self.native, package / "__init__.py")
+                self.assertEqual(module._find_library(), str(bundled.resolve()))
+            self.assertEqual(module._lib, self.native)
+            self.assertEqual(self.native.calls, [])
+
+    def test_missing_package_dll_rejects_stale_target_cache(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "logi_vhid"
+            package.mkdir()
+            for profile in ("release", "debug"):
+                stale = root / "target" / profile / "logi_vhid.dll"
+                stale.parent.mkdir(parents=True)
+                stale.touch()
+            environment = {key: value for key, value in os.environ.items()
+                           if key != "LOGI_VHID_DLL"}
+            with mock.patch.dict(os.environ, environment, clear=True):
+                with self.assertRaises(FileNotFoundError):
+                    load_module(self.native, package / "__init__.py")
+            self.assertEqual(self.native.calls, [])
+
+    def test_explicit_dll_override_precedes_package_dll(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / "logi_vhid"
+            bundled = package / "_native" / "logi_vhid.dll"
+            bundled.parent.mkdir(parents=True)
+            bundled.touch()
+            override = str(Path(directory) / "explicit.dll")
+            with mock.patch.dict(os.environ, {"LOGI_VHID_DLL": override}):
+                module = load_module(self.native, package / "__init__.py")
+                self.assertEqual(module._find_library(), override)
+            self.assertEqual(module._lib, self.native)
+            self.assertEqual(self.native.calls, [])
 
     def test_concurrent_close_releases_handle_once(self):
         device = self.module.LogitechVirtualHid()

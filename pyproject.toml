@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77", "wheel>=0.45", "packaging>=24"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logi-vhid"
+dynamic = ["version"]
+description = "Keyboard/mouse input through Logitech G HUB's virtual HID bus"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Operating System :: Microsoft :: Windows :: Windows 10",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.urls]
+Repository = "https://github.com/lona-cn/logi-vhid"
+
+[tool.setuptools]
+package-dir = {"" = "python"}
+packages = ["logi_vhid"]
+include-package-data = false

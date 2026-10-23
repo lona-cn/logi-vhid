@@ -1,0 +1,24 @@
+[package]
+name = "logi-vhid"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+description = "Keyboard/mouse input through Logitech G HUB's virtual HID bus"
+repository = "https://github.com/lona-cn/logi-vhid"
+license = "MIT"
+exclude = ["**/__pycache__/**", "**/*.pyc", "**/*.pyo"]
+
+[package.metadata.docs.rs]
+targets = ["x86_64-pc-windows-msvc"]
+
+[lib]
+name = "logi_vhid"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "logi-vhid-demo"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 2

@@ -21,15 +21,17 @@ class ReleaseTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "Cargo.toml").write_text(
-            '[package]\nname = "logi-vhid"\nversion = "1.2.3"\n', encoding="utf-8"
+            '[workspace.package]\nversion = "1.2.3"\n', encoding="utf-8"
         )
         self.dist = self.root / "dist"
         self.dist.mkdir()
         self.sdk = self.dist / "logi-vhid-1.2.3-windows-x86_64-msvc.zip"
         self.wheel = self.dist / "logi_vhid-1.2.3-py3-none-win_amd64.whl"
+        self.mcp = self.dist / "logi-vhid-mcp-1.2.3-windows-x86_64-msvc.exe"
         self.dll = b"isolated native artifact fixture\x00"
         self.write_sdk()
         self.write_wheel()
+        self.mcp.write_bytes(b"isolated MCP executable fixture\x00")
         self.write_checksums()
 
     def write_sdk(self, extra=None):
@@ -63,7 +65,7 @@ class ReleaseTests(unittest.TestCase):
 
     def write_checksums(self):
         lines = []
-        for artifact in (self.sdk, self.wheel):
+        for artifact in (self.sdk, self.wheel, self.mcp):
             digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
             lines.append(f"{digest}  {artifact.name}\n")
         (self.dist / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
@@ -72,8 +74,11 @@ class ReleaseTests(unittest.TestCase):
         return release.verify_assets("v1.2.3", self.dist, root=self.root)
 
     def test_matching_assets_are_accepted_without_native_tools(self):
-        with patch.object(release.subprocess, "run", side_effect=AssertionError("native tool invoked")):
-            self.verify()
+        with (
+            patch.object(release.subprocess, "run", side_effect=AssertionError("native tool invoked")),
+            patch.object(release.subprocess, "Popen", side_effect=AssertionError("executable started")),
+        ):
+            self.assertEqual(self.verify(), (self.sdk, self.wheel, self.mcp))
 
     def test_tag_mismatch_is_rejected_before_any_build_process(self):
         with self.assertRaises(ValueError):
@@ -91,7 +96,7 @@ class ReleaseTests(unittest.TestCase):
         ):
             with self.subTest(version=cargo):
                 (self.root / "Cargo.toml").write_text(
-                    f'[package]\nname = "logi-vhid"\nversion = "{cargo}"\n',
+                    f'[workspace.package]\nversion = "{cargo}"\n',
                     encoding="utf-8",
                 )
                 self.assertEqual(
@@ -105,7 +110,7 @@ class ReleaseTests(unittest.TestCase):
         ):
             with self.subTest(version=version):
                 (self.root / "Cargo.toml").write_text(
-                    f'[package]\nname = "logi-vhid"\nversion = "{version}"\n',
+                    f'[workspace.package]\nversion = "{version}"\n',
                     encoding="utf-8",
                 )
                 with self.assertRaises(ValueError):
@@ -114,6 +119,62 @@ class ReleaseTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         release.build_release(f"v{version}", self.dist, root=self.root)
                     run.assert_not_called()
+
+    def test_prerelease_assets_keep_cargo_version_in_mcp_name(self):
+        self.assertEqual(
+            release.artifact_names("1.2.3-rc.4", "1.2.3rc4"),
+            (
+                "logi-vhid-1.2.3-rc.4-windows-x86_64-msvc.zip",
+                "logi_vhid-1.2.3rc4-py3-none-win_amd64.whl",
+                "logi-vhid-mcp-1.2.3-rc.4-windows-x86_64-msvc.exe",
+            ),
+        )
+
+    def test_missing_mcp_executable_is_rejected(self):
+        self.mcp.unlink()
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_extra_mcp_executable_is_rejected(self):
+        for name in ("extra.exe", "extra.EXE"):
+            with self.subTest(name=name):
+                extra = self.dist / name
+                extra.write_bytes(b"unexpected executable")
+                try:
+                    with self.assertRaises(ValueError):
+                        self.verify()
+                finally:
+                    extra.unlink()
+
+    def test_wrongly_named_mcp_executable_is_rejected(self):
+        self.mcp.rename(self.dist / "logi-vhid-mcp-1.2.4-windows-x86_64-msvc.exe")
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_mcp_executable_corruption_is_rejected(self):
+        self.mcp.write_bytes(b"changed executable after checksumming")
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_mcp_checksum_entry_is_required(self):
+        checksums = self.dist / "SHA256SUMS"
+        lines = checksums.read_text(encoding="utf-8").splitlines(keepends=True)
+        checksums.write_text(
+            "".join(line for line in lines if not line.endswith(self.mcp.name + "\n")),
+            encoding="utf-8",
+        )
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_mcp_executable_symlink_is_rejected(self):
+        executable = self.dist / "executable-payload"
+        self.mcp.rename(executable)
+        try:
+            self.mcp.symlink_to(executable)
+        except OSError as error:
+            self.skipTest(f"symlink creation unavailable: {error}")
+        with self.assertRaises(ValueError):
+            self.verify()
 
     def test_artifact_corruption_is_rejected(self):
         with self.sdk.open("ab") as artifact:

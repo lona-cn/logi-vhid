@@ -1,2 +1,5 @@
 include Cargo.toml Cargo.lock
-recursive-include src *.rs
+include README.md LICENSE
+include include/*.h
+recursive-include crates *.toml *.rs
+include crates/logi-vhid-mcp/README.md

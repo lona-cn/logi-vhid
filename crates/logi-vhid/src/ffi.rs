@@ -1,7 +1,7 @@
 //! Raw Win32 bindings and small helpers.
 //!
-//! Keeping the FFI surface in one module makes the protocol and device code
-//! readable and keeps `unsafe` out of the higher layers.
+//! Win32 declarations and ABI layouts are centralized here. Modules that call
+//! these functions still contain the required `unsafe` blocks.
 
 use crate::error::{Error, Result};
 
@@ -49,6 +49,9 @@ pub(crate) struct SpDeviceInterfaceData {
     pub(crate) reserved: usize,
 }
 
+/// A point in physical pixels for this crate's coordinate APIs. Screen points
+/// use the virtual-desktop origin (coordinates may be negative); client points
+/// use the window's client origin. The calling API determines which space applies.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Point {
@@ -56,6 +59,9 @@ pub struct Point {
     pub y: i32,
 }
 
+/// A pixel rectangle with inclusive left/top and exclusive right/bottom edges.
+/// Screen rectangles may have negative origins; client rectangles are local to
+/// the window. See the returning API for the coordinate space.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Rect {
@@ -74,6 +80,7 @@ impl Rect {
         self.bottom - self.top
     }
 
+    /// Test membership using inclusive left/top and exclusive right/bottom edges.
     pub fn contains(self, point: Point) -> bool {
         point.x >= self.left && point.x < self.right && point.y >= self.top && point.y < self.bottom
     }

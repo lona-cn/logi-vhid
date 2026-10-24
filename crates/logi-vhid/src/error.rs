@@ -10,19 +10,27 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Error {
-    /// A Windows API call failed.
+    /// A Windows API or supporting I/O/thread operation failed.
     Io {
         /// Short operation name, e.g. `"DeviceIoControl"`.
         context: &'static str,
-        /// The underlying OS error.
+        /// Underlying error. Some Windows APIs do not set a useful last-error
+        /// code (notably input blocked by UIPI), so this may be zero or stale.
         source: io::Error,
     },
-    /// The driver returned an unexpected protocol response.
+    /// A protocol/state check failed, including a PID gate or cursor that could
+    /// not reach its target; not necessarily a malformed driver response.
     Protocol(String),
-    /// The caller asked for something the protocol cannot express.
+    /// The requested input, option or state is unsupported (for example a
+    /// disabled device, unmapped character, or full six-key report).
     Unsupported(String),
-    /// The Logitech G HUB virtual bus interface was not found.
+    /// A bus interface, expected HID child, or matching visible window was not
+    /// found, including a child-device appearance timeout.
     NotFound(String),
+    /// Cooperative execution was cancelled at a safe boundary.
+    Cancelled,
+    /// Cooperative execution reached its caller-provided deadline.
+    TimedOut,
 }
 
 impl Error {
@@ -56,6 +64,8 @@ impl fmt::Display for Error {
             Self::Protocol(message) => write!(f, "protocol error: {message}"),
             Self::Unsupported(message) => write!(f, "unsupported: {message}"),
             Self::NotFound(message) => write!(f, "not found: {message}"),
+            Self::Cancelled => f.write_str("execution cancelled"),
+            Self::TimedOut => f.write_str("execution timed out"),
         }
     }
 }

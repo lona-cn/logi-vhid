@@ -38,6 +38,14 @@ class VersionTests(unittest.TestCase):
 
 class NativePackagingTests(unittest.TestCase):
 
+    def test_valid_prebuilt_library_does_not_require_cargo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            library = Path(directory) / "logi_vhid.dll"
+            library.write_bytes(b"controlled prebuilt DLL")
+            with mock.patch.dict(os.environ, {"LOGI_VHID_NATIVE_DIR": directory}):
+                with mock.patch.object(BUILD.subprocess, "run", side_effect=FileNotFoundError("Cargo unavailable")):
+                    self.assertEqual(BUILD.native_library(), library)
+
     def test_invalid_prebuilt_directories_fail_instead_of_building(self):
         with tempfile.TemporaryDirectory() as directory:
             for supplied in ("relative-directory", directory, ""):
@@ -51,8 +59,6 @@ class NativePackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             target_directory = Path(directory) / "externally-configured-target"
             library = target_directory / "x86_64-pc-windows-msvc" / "release" / "logi_vhid.dll"
-            library.parent.mkdir(parents=True)
-            library.write_bytes(b"controlled source build output")
             environment = {key: value for key, value in os.environ.items()
                            if key != "LOGI_VHID_NATIVE_DIR"}
 
@@ -61,7 +67,9 @@ class NativePackagingTests(unittest.TestCase):
                     return subprocess.CompletedProcess(args, 0, json.dumps({
                         "target_directory": str(target_directory),
                     }))
-                if args == ["cargo", "build", "--locked", "--release", "--target", "x86_64-pc-windows-msvc", "--lib"]:
+                if args == ["cargo", "build", "--locked", "--release", "--target", "x86_64-pc-windows-msvc", "-p", "logi-vhid", "--lib"]:
+                    library.parent.mkdir(parents=True)
+                    library.write_bytes(b"controlled source build output")
                     return subprocess.CompletedProcess(args, 0)
                 raise AssertionError(f"Unexpected compiler invocation: {args}")
 

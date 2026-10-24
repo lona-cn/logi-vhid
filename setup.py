@@ -63,7 +63,7 @@ def native_library():
         )
         target_directory = Path(json.loads(metadata.stdout)["target_directory"])
         subprocess.run(
-            ["cargo", "build", "--locked", "--release", "--target", TARGET, "--lib"],
+            ["cargo", "build", "--locked", "--release", "--target", TARGET, "-p", "logi-vhid", "--lib"],
             cwd=ROOT,
             check=True,
         )
@@ -107,7 +107,7 @@ class WindowsWheel(bdist_wheel):
 
 if __name__ == "__main__":
     with (ROOT / "Cargo.toml").open("rb") as manifest:
-        cargo_version = tomllib.load(manifest)["package"]["version"]
+        cargo_version = tomllib.load(manifest)["workspace"]["package"]["version"]
     setup(
         version=python_version(cargo_version),
         distclass=NativeDistribution,

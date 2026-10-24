@@ -1,4 +1,10 @@
 //! Monitor, window, and client-coordinate helpers.
+//!
+//! Coordinate APIs use physical pixels, not DPI-scaled logical units. They
+//! temporarily set per-monitor-v2 awareness on the calling thread and restore
+//! its previous context; the host process's DPI policy is not changed. Screen
+//! coordinates can be negative on a multi-monitor desktop. Returned window and
+//! monitor handles are borrowed snapshots, not owned resources.
 
 use std::ptr::null;
 
@@ -10,7 +16,8 @@ use crate::ffi::{
     Rect, ScreenToClient, BOOL, MONITORINFOF_PRIMARY, MONITOR_DEFAULTTONEAREST,
 };
 
-/// Monitor rectangle and metadata.
+/// Monitor metadata. Rectangles use physical screen pixels with exclusive
+/// right/bottom edges; `work_area` excludes reserved desktop areas such as taskbars.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MonitorInfo {
     pub handle: isize,
@@ -20,6 +27,7 @@ pub struct MonitorInfo {
 }
 
 /// Bounding rectangle of the whole virtual desktop, in physical pixels.
+/// It may have a negative origin and include gaps with no monitor.
 pub fn virtual_desktop_rect() -> Result<Rect> {
     with_physical_coordinates(|| {
         let (x, y, width, height) = virtual_screen()?;
@@ -32,7 +40,8 @@ pub fn virtual_desktop_rect() -> Result<Rect> {
     })
 }
 
-/// Enumerate all monitors in the current desktop.
+/// Enumerate monitors in the current desktop, with physical-pixel rectangles.
+/// Enumeration order is not a stable monitor identifier.
 pub fn monitors() -> Result<Vec<MonitorInfo>> {
     with_physical_coordinates(|| unsafe {
         let mut handles: Vec<isize> = Vec::new();
@@ -54,7 +63,7 @@ pub fn monitors() -> Result<Vec<MonitorInfo>> {
     })
 }
 
-/// Monitor containing or nearest to a point.
+/// Monitor containing or nearest to a physical screen point.
 pub fn monitor_from_point(point: Point) -> Result<MonitorInfo> {
     with_physical_coordinates(|| unsafe {
         let handle = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
@@ -102,7 +111,10 @@ pub fn foreground_window() -> Option<isize> {
     }
 }
 
-/// Find the first visible window whose title contains `needle` (case-insensitive).
+/// Find the first visible top-level window whose title contains `needle`
+/// (case-insensitive). Does not activate the window or guarantee a unique match.
+/// Empty searches return [`Error::Unsupported`]; no match returns
+/// [`Error::NotFound`].
 pub fn find_window_by_title(needle: &str) -> Result<isize> {
     if needle.is_empty() {
         return Err(Error::Unsupported(
@@ -153,7 +165,8 @@ pub fn find_window_by_title(needle: &str) -> Result<isize> {
     }
 }
 
-/// Window rectangle in physical screen pixels.
+/// Window rectangle in physical screen pixels, including non-client areas and
+/// possibly invisible resize borders. Not the DWM visible frame bounds.
 pub fn window_rect(window: isize) -> Result<Rect> {
     with_physical_coordinates(|| {
         let mut rect = Rect::default();
@@ -164,7 +177,8 @@ pub fn window_rect(window: isize) -> Result<Rect> {
     })
 }
 
-/// Client rectangle in physical, window-local pixels.
+/// Client rectangle in physical, window-local pixels, normally starting at
+/// `(0, 0)` with exclusive right/bottom edges. Does not include title bar/borders.
 pub fn client_rect(window: isize) -> Result<Rect> {
     with_physical_coordinates(|| {
         let mut rect = Rect::default();
@@ -176,6 +190,7 @@ pub fn client_rect(window: isize) -> Result<Rect> {
 }
 
 /// Convert a physical client-relative point to physical screen coordinates.
+/// Does not check whether the point is inside the client rectangle.
 pub fn client_to_screen(window: isize, point: Point) -> Result<Point> {
     with_physical_coordinates(|| {
         let mut point = point;
@@ -187,6 +202,7 @@ pub fn client_to_screen(window: isize, point: Point) -> Result<Point> {
 }
 
 /// Convert a physical screen point to physical client-relative coordinates.
+/// Does not check whether the point is inside the client rectangle.
 pub fn screen_to_client(window: isize, point: Point) -> Result<Point> {
     with_physical_coordinates(|| {
         let mut point = point;
@@ -197,7 +213,12 @@ pub fn screen_to_client(window: isize, point: Point) -> Result<Point> {
     })
 }
 
-/// DPI of a window (96 = 100% scaling).
+/// DPI reported by Win32 `GetDpiForWindow` (96 = 100% scaling).
+///
+/// This depends on the target window's DPI awareness: an unaware window reports
+/// 96, a system-aware window reports system DPI, and a per-monitor-aware window
+/// reports its monitor DPI. It is not always the physical monitor's scale and
+/// should not be applied again to this crate's physical-pixel coordinates.
 pub fn window_dpi(window: isize) -> Result<u32> {
     with_physical_coordinates(|| {
         let dpi = unsafe { GetDpiForWindow(window) };

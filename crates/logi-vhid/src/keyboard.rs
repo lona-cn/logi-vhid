@@ -1,17 +1,20 @@
 //! Keyboard reports, HID key codes, keyboard layouts, and Unicode text input.
 
-use std::thread::sleep;
 use std::time::Duration;
 
 use crate::device::ReportSink;
 use crate::error::{Error, Result};
+use crate::execution::ExecutionContext;
 use crate::ffi::{
     GetKeyState, InputKeyboard, KeyInput, LoadKeyboardLayoutW, MapVirtualKeyExW, SendInput,
     ToUnicodeEx, VkKeyScanExW, INPUT_KEYBOARD, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
 };
 use crate::protocol::{KeyboardReport, IOCTL_KEYBOARD_REPORT};
 
-/// Keyboard HID usage ids (HID Usage Tables, Keyboard/Keypad page 0x07).
+/// Keyboard HID usage IDs (HID Usage Tables, Keyboard/Keypad page `0x07`).
+/// These identify keys, not characters; the target's active layout determines
+/// their text. Modifiers occupy `0xE0` through `0xE7` and do not use the six
+/// non-modifier report slots.
 pub mod hid {
     pub const A: u8 = 0x04;
     pub const B: u8 = 0x05;
@@ -111,12 +114,20 @@ pub(crate) struct KeyboardState {
     pressed: [u8; 6],
 }
 
-/// Keyboard layout used by HID text input.
+/// Windows layout used to map characters to physical HID keys.
+///
+/// Selecting a value does not activate that layout in the target application.
+/// The target must already use the same layout. HID text supports only characters
+/// resolved to a single key combination without dead keys or composition.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyboardLayout {
+    /// US English (`00000409`).
     Us,
+    /// UK English (`00000809`).
     Uk,
+    /// German (`00000407`).
     De,
+    /// French (`0000040C`).
     Fr,
 }
 
@@ -134,12 +145,14 @@ impl KeyboardLayout {
 /// How [`crate::LogitechVirtualHid::type_text`] should send text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TextMode {
-    /// Send virtual keyboard reports for the selected Windows keyboard layout.
-    /// Returns an error for characters outside Unicode's Basic Multilingual
-    /// Plane or those requiring an accent key followed by a letter.
+    /// Send virtual keyboard reports mapped with the selected Windows layout.
+    /// The target layout must match. Unsupported characters (including non-BMP
+    /// text and dead-key compositions) fail incrementally; earlier characters may
+    /// already have been typed. See [`crate::LogitechVirtualHid::type_text_layout`].
     Hid(KeyboardLayout),
-    /// Win32 `SendInput` with `KEYEVENTF_UNICODE`.  Supports arbitrary Unicode
-    /// but does not use the Logitech driver.
+    /// Win32 `SendInput` with `KEYEVENTF_UNICODE`, not the Logitech driver.
+    /// Encodes arbitrary Unicode, but delivery depends on Windows restrictions
+    /// and application support. See [`crate::LogitechVirtualHid::type_unicode`].
     Win32Unicode,
 }
 
@@ -206,12 +219,21 @@ impl KeyboardState {
     }
 
     pub(crate) fn press(&mut self, device: &impl ReportSink, usage: u8) -> Result<()> {
-        self.hold_key(device, usage, Duration::from_millis(20))
+        self.press_with_control(device, usage, ExecutionContext::uncontrolled())
+    }
+
+    pub(crate) fn press_with_control(
+        &mut self,
+        device: &impl ReportSink,
+        usage: u8,
+        control: ExecutionContext<'_>,
+    ) -> Result<()> {
+        self.hold_key_with_control(device, usage, Duration::from_millis(20), control)
     }
 
     pub(crate) fn release_all(&mut self, device: &impl ReportSink) -> Result<()> {
         let next = Self::new();
-        next.send(device)?;
+        next.send_cleanup(device)?;
         *self = next;
         Ok(())
     }
@@ -236,7 +258,7 @@ impl KeyboardState {
         let mut next = *self;
         next.retain_held(initial);
         if next.modifiers != self.modifiers || next.pressed != self.pressed {
-            next.send(device)?;
+            next.send_cleanup(device)?;
             *self = next;
         }
         Ok(())
@@ -253,6 +275,15 @@ impl KeyboardState {
     }
 
     pub(crate) fn press_combo(&mut self, device: &impl ReportSink, usages: &[u8]) -> Result<()> {
+        self.press_combo_with_control(device, usages, ExecutionContext::uncontrolled())
+    }
+
+    pub(crate) fn press_combo_with_control(
+        &mut self,
+        device: &impl ReportSink,
+        usages: &[u8],
+        control: ExecutionContext<'_>,
+    ) -> Result<()> {
         if usages.len() > 14 {
             return Err(Error::Unsupported(
                 "keyboard combo has more than 14 usages".to_string(),
@@ -261,17 +292,20 @@ impl KeyboardState {
         let initial = *self;
         let mut result = Ok(());
         for &usage in usages {
-            if let Err(err) = self.key_down(device, usage) {
+            if let Err(err) = control.check().and_then(|()| self.key_down(device, usage)) {
                 result = Err(err);
                 break;
             }
         }
         if !usages.is_empty() {
-            sleep(Duration::from_millis(20));
+            let waited = control.wait(Duration::from_millis(20));
+            if result.is_ok() {
+                result = waited;
+            }
         }
         for &usage in usages.iter().rev() {
             if !initial.contains(usage) && self.contains(usage) {
-                let released = self.key_up(device, usage);
+                let released = control.check().and_then(|()| self.key_up(device, usage));
                 if result.is_ok() {
                     result = released;
                 }
@@ -286,11 +320,23 @@ impl KeyboardState {
         usage: u8,
         duration: Duration,
     ) -> Result<()> {
+        self.hold_key_with_control(device, usage, duration, ExecutionContext::uncontrolled())
+    }
+
+    pub(crate) fn hold_key_with_control(
+        &mut self,
+        device: &impl ReportSink,
+        usage: u8,
+        duration: Duration,
+        control: ExecutionContext<'_>,
+    ) -> Result<()> {
         let initial = *self;
         let result = (|| {
+            control.check()?;
             self.key_down(device, usage)?;
-            sleep(duration);
+            control.wait(duration)?;
             if !initial.contains(usage) {
+                control.check()?;
                 self.key_up(device, usage)?;
             }
             Ok(())
@@ -305,10 +351,28 @@ impl KeyboardState {
         count: u32,
         interval: Duration,
     ) -> Result<()> {
+        self.repeat_key_with_control(
+            device,
+            usage,
+            count,
+            interval,
+            ExecutionContext::uncontrolled(),
+        )
+    }
+
+    pub(crate) fn repeat_key_with_control(
+        &mut self,
+        device: &impl ReportSink,
+        usage: u8,
+        count: u32,
+        interval: Duration,
+        control: ExecutionContext<'_>,
+    ) -> Result<()> {
         for index in 0..count {
-            self.hold_key(device, usage, Duration::from_millis(8))?;
+            control.check()?;
+            self.hold_key_with_control(device, usage, Duration::from_millis(8), control)?;
             if index + 1 < count {
-                sleep(interval);
+                control.wait(interval)?;
             }
         }
         Ok(())
@@ -321,13 +385,25 @@ impl KeyboardState {
         text: &str,
         layout: KeyboardLayout,
     ) -> Result<()> {
+        self.type_text_layout_with_control(device, text, layout, ExecutionContext::uncontrolled())
+    }
+
+    pub(crate) fn type_text_layout_with_control(
+        &mut self,
+        device: &impl ReportSink,
+        text: &str,
+        layout: KeyboardLayout,
+        control: ExecutionContext<'_>,
+    ) -> Result<()> {
         if text.is_empty() {
             return Ok(());
         }
+        control.check()?;
         let caps = caps_lock_state()?;
-        self.type_layout(device, text, layout, caps, false)
+        self.type_layout_with_control(device, text, layout, caps, false, control)
     }
 
+    #[cfg(test)]
     fn type_layout(
         &mut self,
         device: &impl ReportSink,
@@ -336,9 +412,30 @@ impl KeyboardState {
         caps: bool,
         ascii_only: bool,
     ) -> Result<()> {
+        self.type_layout_with_control(
+            device,
+            text,
+            layout,
+            caps,
+            ascii_only,
+            ExecutionContext::uncontrolled(),
+        )
+    }
+
+    fn type_layout_with_control(
+        &mut self,
+        device: &impl ReportSink,
+        text: &str,
+        layout: KeyboardLayout,
+        caps: bool,
+        ascii_only: bool,
+        control: ExecutionContext<'_>,
+    ) -> Result<()> {
+        control.check()?;
         let hkl = load_layout(layout)?;
         let mut previous_cr = false;
         for (index, ch) in text.chars().enumerate() {
+            control.check()?;
             if ch == '\n' && previous_cr {
                 previous_cr = false;
                 continue;
@@ -358,9 +455,9 @@ impl KeyboardState {
                     ))
                 })?,
             };
-            self.type_one(device, usage, shift, ctrl, alt)?;
+            self.type_one(device, usage, shift, ctrl, alt, control)?;
             if ascii_only {
-                sleep(Duration::from_millis(8));
+                control.wait(Duration::from_millis(8))?;
             }
         }
         Ok(())
@@ -373,6 +470,7 @@ impl KeyboardState {
         shift: bool,
         ctrl: bool,
         alt: bool,
+        control: ExecutionContext<'_>,
     ) -> Result<()> {
         let initial = *self;
         let mut modifiers = [0u8; 3];
@@ -391,18 +489,21 @@ impl KeyboardState {
         }
         let mut result = (|| {
             for &modifier in &modifiers[..count] {
+                control.check()?;
                 self.key_down(device, modifier)?;
             }
+            control.check()?;
             self.key_down(device, usage)?;
-            sleep(Duration::from_millis(8));
+            control.wait(Duration::from_millis(8))?;
             if !initial.contains(usage) {
+                control.check()?;
                 self.key_up(device, usage)?;
             }
             Ok(())
         })();
         for &modifier in modifiers[..count].iter().rev() {
             if !initial.contains(modifier) && self.contains(modifier) {
-                let released = self.key_up(device, modifier);
+                let released = control.check().and_then(|()| self.key_up(device, modifier));
                 if result.is_ok() {
                     result = released;
                 }
@@ -413,11 +514,21 @@ impl KeyboardState {
 
     /// Type printable ASCII using the US physical keyboard layout.
     pub(crate) fn type_ascii(&mut self, device: &impl ReportSink, text: &str) -> Result<()> {
+        self.type_ascii_with_control(device, text, ExecutionContext::uncontrolled())
+    }
+
+    pub(crate) fn type_ascii_with_control(
+        &mut self,
+        device: &impl ReportSink,
+        text: &str,
+        control: ExecutionContext<'_>,
+    ) -> Result<()> {
         if text.is_empty() {
             return Ok(());
         }
+        control.check()?;
         let caps = caps_lock_state()?;
-        self.type_layout(device, text, KeyboardLayout::Us, caps, true)
+        self.type_layout_with_control(device, text, KeyboardLayout::Us, caps, true, control)
     }
 
     fn send(&self, device: &impl ReportSink) -> Result<()> {
@@ -426,6 +537,14 @@ impl KeyboardState {
             keys: self.pressed,
         };
         device.send_report(IOCTL_KEYBOARD_REPORT, &report.to_bytes())
+    }
+
+    fn send_cleanup(&self, device: &impl ReportSink) -> Result<()> {
+        let report = KeyboardReport {
+            modifiers: self.modifiers,
+            keys: self.pressed,
+        };
+        device.send_cleanup_report(IOCTL_KEYBOARD_REPORT, &report.to_bytes())
     }
 }
 
@@ -577,7 +696,11 @@ fn scan_to_usage(scan: u16) -> Option<u8> {
 /// If only a key-down is inserted, attempt its release before returning the
 /// original send error, even if that release also fails.
 pub(crate) fn type_unicode(text: &str) -> Result<()> {
-    type_unicode_with(text, |inputs| {
+    type_unicode_with_control(text, ExecutionContext::uncontrolled())
+}
+
+pub(crate) fn type_unicode_with_control(text: &str, control: ExecutionContext<'_>) -> Result<()> {
+    type_unicode_with_controlled(text, control, |inputs| {
         let sent = unsafe {
             SendInput(
                 inputs.len() as u32,
@@ -593,11 +716,21 @@ pub(crate) fn type_unicode(text: &str) -> Result<()> {
     })
 }
 
+#[cfg(test)]
 fn type_unicode_with(
     text: &str,
+    send: impl FnMut(&[InputKeyboard]) -> std::result::Result<(), (u32, Error)>,
+) -> Result<()> {
+    type_unicode_with_controlled(text, ExecutionContext::uncontrolled(), send)
+}
+
+fn type_unicode_with_controlled(
+    text: &str,
+    control: ExecutionContext<'_>,
     mut send: impl FnMut(&[InputKeyboard]) -> std::result::Result<(), (u32, Error)>,
 ) -> Result<()> {
     for unit in text.encode_utf16() {
+        control.check()?;
         let down = InputKeyboard {
             type_: INPUT_KEYBOARD,
             _pad: 0,
@@ -635,7 +768,10 @@ fn type_unicode_with(
 
 /// Translate a Win32 virtual-key code to a HID keyboard usage id.
 ///
-/// This covers common keys; for full control use the raw usage ids in [`hid`].
+/// This is a fixed, partial mapping, not a layout-aware character conversion.
+/// It includes letters, digits, common navigation/modifier keys, F1–F12 and F24;
+/// unsupported codes return `None`. Generic Shift/Ctrl/Alt map to the left key.
+/// For physical-key control use the raw usage IDs in [`hid`].
 pub fn vk_to_usage(vk: u16) -> Option<u8> {
     match vk {
         0x41..=0x5A => Some(0x04 + (vk as u8 - 0x41)),
@@ -725,6 +861,100 @@ mod tests {
                     Error::io("SendInput", std::io::Error::from_raw_os_error(code)),
                 ))
             }
+        }
+    }
+
+    #[test]
+    fn unicode_cancellation_does_not_block_partial_key_up_cleanup() {
+        let cancelled = std::cell::Cell::new(false);
+        let checkpoint = || {
+            if cancelled.get() {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        };
+        let mut input = UnicodeInput::new(&[(1, 5)]);
+        let error = type_unicode_with_controlled(
+            "ab",
+            ExecutionContext::controlled(&checkpoint),
+            |events| {
+                let result = input.send(events);
+                cancelled.set(true);
+                result
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Io { source, .. } if source.raw_os_error() == Some(5)
+        ));
+        assert!(input.held.is_empty());
+        assert_eq!(input.accepted, [(0x0061, false), (0x0061, true)]);
+        assert_eq!(input.calls, 2);
+    }
+
+    #[test]
+    fn unicode_cancellation_stops_before_the_next_utf16_pair() {
+        let cancelled = std::cell::Cell::new(false);
+        let checkpoint = || {
+            if cancelled.get() {
+                Err(Error::Cancelled)
+            } else {
+                Ok(())
+            }
+        };
+        let mut input = UnicodeInput::new(&[]);
+        let error = type_unicode_with_controlled(
+            "😀a",
+            ExecutionContext::controlled(&checkpoint),
+            |events| {
+                let result = input.send(events);
+                cancelled.set(true);
+                result
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::Cancelled));
+        assert_eq!(input.accepted, [(0xD83D, false), (0xD83D, true)]);
+        assert!(input.held.is_empty());
+        assert_eq!(input.calls, 1);
+    }
+
+    #[test]
+    fn controlled_temporary_keys_cleanup_without_losing_the_baseline() {
+        for operation in 0..3 {
+            let reports = Reports::default();
+            let mut keyboard = KeyboardState::new();
+            keyboard.key_down(&reports, hid::B).unwrap();
+            let checkpoint = || {
+                if reports.accepted().len() >= 2 {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            };
+            let control = ExecutionContext::controlled(&checkpoint);
+            let sink = crate::execution::ControlledSink {
+                sink: &reports,
+                control,
+            };
+            let result = match operation {
+                0 => keyboard.hold_key_with_control(&sink, hid::A, Duration::ZERO, control),
+                1 => keyboard.press_combo_with_control(&sink, &[hid::A, hid::C], control),
+                _ => keyboard.repeat_key_with_control(&sink, hid::A, 2, Duration::ZERO, control),
+            };
+            assert!(matches!(result, Err(Error::Cancelled)));
+            assert_eq!(
+                reports.accepted(),
+                [
+                    (IOCTL_KEYBOARD_REPORT, [0, 0, hid::B, 0, 0, 0, 0, 0]),
+                    (IOCTL_KEYBOARD_REPORT, [0, 0, hid::B, hid::A, 0, 0, 0, 0]),
+                    (IOCTL_KEYBOARD_REPORT, [0, 0, hid::B, 0, 0, 0, 0, 0]),
+                ]
+            );
+            keyboard.key_down(&reports, hid::D).unwrap();
+            assert_eq!(reports.last(), [0, 0, hid::B, hid::D, 0, 0, 0, 0]);
         }
     }
 

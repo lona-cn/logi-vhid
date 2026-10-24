@@ -1,4 +1,4 @@
-"""Build and validate the Windows x64 SDK and ctypes wheel.
+"""Build and validate the Windows x64 SDK, ctypes wheel, and local MCP executable.
 
 verify-assets deliberately performs no extraction, native loading, or subprocesses.
 """
@@ -23,6 +23,8 @@ from packaging.tags import Tag
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
+import mcp_smoke
+
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = "x86_64-pc-windows-msvc"
 DLL_MEMBER = "logi_vhid/_native/logi_vhid.dll"
@@ -35,7 +37,7 @@ SDK_MEMBERS = (
 
 def release_version(tag: str, root: Path) -> tuple[str, str]:
     with (root / "Cargo.toml").open("rb") as manifest:
-        cargo_version = tomllib.load(manifest)["package"]["version"]
+        cargo_version = tomllib.load(manifest)["workspace"]["package"]["version"]
     if tag != f"v{cargo_version}":
         raise ValueError(f"tag must exactly equal v{cargo_version}, got {tag!r}")
     # Match the wheel backend's public release policy before any native build.
@@ -51,10 +53,11 @@ def release_version(tag: str, root: Path) -> tuple[str, str]:
     return cargo_version, str(Version(cargo_version))
 
 
-def artifact_names(cargo_version: str, python_version: str) -> tuple[str, str]:
+def artifact_names(cargo_version: str, python_version: str) -> tuple[str, str, str]:
     return (
         f"logi-vhid-{cargo_version}-windows-x86_64-msvc.zip",
         f"logi_vhid-{python_version}-py3-none-win_amd64.whl",
+        f"logi-vhid-mcp-{cargo_version}-windows-x86_64-msvc.exe",
     )
 
 
@@ -103,24 +106,26 @@ def verify_checksums(dist: Path, expected: set[str]) -> None:
             raise ValueError(f"unexpected or unsafe checksum name: {name!r}")
         entries[name] = digest.lower()
     if set(entries) != expected:
-        raise ValueError("SHA256SUMS must list exactly the SDK and wheel basenames")
+        raise ValueError("SHA256SUMS must list exactly the SDK, wheel, and MCP executable basenames")
     for name, digest in entries.items():
         path = dist / name
         if path.is_symlink() or not path.is_file() or sha256(path) != digest:
             raise ValueError(f"missing artifact or SHA256 mismatch: {name}")
 
 
-def verify_assets(tag: str, dist: Path, *, root: Path = ROOT) -> tuple[Path, Path]:
+def verify_assets(tag: str, dist: Path, *, root: Path = ROOT) -> tuple[Path, Path, Path]:
     cargo_version, python_version = release_version(tag, Path(root))
     dist = Path(dist).resolve()
-    sdk_name, wheel_name = artifact_names(cargo_version, python_version)
+    sdk_name, wheel_name, mcp_name = artifact_names(cargo_version, python_version)
     if sorted(path.name for path in dist.glob("*.whl")) != [wheel_name]:
         raise ValueError(f"expected exactly one wheel named {wheel_name}")
     if sorted(path.name for path in dist.glob("*.zip")) != [sdk_name]:
         raise ValueError(f"expected exactly one SDK named {sdk_name}")
-    sdk, wheel = dist / sdk_name, dist / wheel_name
+    if sorted(path.name for path in dist.iterdir() if path.suffix.casefold() == ".exe") != [mcp_name]:
+        raise ValueError(f"expected exactly one MCP executable named {mcp_name}")
+    sdk, wheel, mcp = dist / sdk_name, dist / wheel_name, dist / mcp_name
     try:
-        verify_checksums(dist, {sdk_name, wheel_name})
+        verify_checksums(dist, {sdk_name, wheel_name, mcp_name})
         name, version, build, tags = parse_wheel_filename(wheel.name)
         if (canonicalize_name(name) != "logi-vhid" or str(version) != python_version
                 or build or tags != {Tag("py3", "none", "win_amd64")}):
@@ -159,7 +164,7 @@ def verify_assets(tag: str, dist: Path, *, root: Path = ROOT) -> tuple[Path, Pat
                     raise ValueError("archive contains corrupt members")
     except (OSError, zipfile.BadZipFile, KeyError) as error:
         raise ValueError(f"invalid release assets: {error}") from error
-    return sdk, wheel
+    return sdk, wheel, mcp
 
 
 def clean_environment() -> dict[str, str]:
@@ -179,18 +184,26 @@ def release_notes(version: str) -> str:
 
 Target: Windows 10 1703+ x86_64, MSVC ({TARGET}). Python >=3.12.
 
-Assets: native C/C++ SDK ZIP and a ctypes py3-none-win_amd64 wheel.
-Both packages contain the same DLL. SHA256SUMS covers the SDK and wheel.
+Assets: native C/C++ SDK ZIP, ctypes py3-none-win_amd64 wheel, and versioned
+logi-vhid-mcp Windows x64 executable. The SDK and wheel contain the same DLL.
+SHA256SUMS covers exactly these three assets.
 This distribution does not include a driver or G HUB installer.
-The Microsoft Visual C++ v14 x64 runtime may be required and is not bundled.
+The native DLL requires the Microsoft Visual C++ v14 x64 runtime, not bundled here.
 This gate does not claim validation on a clean Windows installation.
+Input calls affect the current desktop. Handles share virtual devices; closing
+one does not send key/button release reports or remove those devices.
 
 ## Acceptance before publication
 
 The automatic release gate verifies artifact metadata, paths, checksums and
 DLL equality; on Windows it installs the wheel in a fresh environment and
-compiles/runs C and C++ SDK consumers. Those smoke checks use only null-handle
-and error-query paths. They do not open devices or verify physical input.
+compiles/runs C and C++ SDK consumers. The C/C++ and wheel smoke checks use only
+null-handle and error-query paths. The MCP safe stdio smoke starts without
+--allow-input, performs initialize/discovery and desktop information queries,
+verifies that a valid key request is rejected with input_disabled and no
+submission, calls stop without an input device, then closes stdin and checks
+normal shutdown. No smoke check initializes HID devices or submits actual input.
+Desktop information may explicitly report that no interactive desktop is available.
 
 Before publishing, the maintainer must perform the intended hardware acceptance
 on a suitable Windows machine and record the Windows version, G HUB version,
@@ -216,16 +229,25 @@ def build_release(tag: str, dist: Path, *, root: Path = ROOT) -> None:
     if not target_directory.is_absolute():
         raise ValueError("cargo metadata target_directory must be absolute")
     subprocess.run(
-        ["cargo", "build", "--locked", "--release", "--target", TARGET, "--lib"],
+        ["cargo", "build", "--locked", "--release", "--target", TARGET, "-p", "logi-vhid", "--lib"],
+        cwd=root, env=environment, check=True,
+    )
+    subprocess.run(
+        ["cargo", "build", "--locked", "--release", "--target", TARGET,
+         "-p", "logi-vhid-mcp", "--bin", "logi-vhid-mcp"],
         cwd=root, env=environment, check=True,
     )
     native = target_directory / TARGET / "release"
     dll, import_library = native / "logi_vhid.dll", native / "logi_vhid.dll.lib"
     if not dll.is_file() or not import_library.is_file():
         raise ValueError("Cargo did not produce logi_vhid.dll and its .dll.lib import library")
-    sdk_name, wheel_name = artifact_names(cargo_version, python_version)
+    mcp = native / "logi-vhid-mcp.exe"
+    if not mcp.is_file():
+        raise ValueError("Cargo did not produce logi-vhid-mcp.exe")
+    sdk_name, wheel_name, mcp_name = artifact_names(cargo_version, python_version)
     with tempfile.TemporaryDirectory(prefix="logi-vhid-build-", dir=dist.parent) as temporary:
         staging = Path(temporary)
+        shutil.copy2(mcp, staging / mcp_name)
         with zipfile.ZipFile(staging / sdk_name, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.write(dll, "bin/logi_vhid.dll")
             archive.write(import_library, "lib/logi_vhid.dll.lib")
@@ -241,12 +263,12 @@ def build_release(tag: str, dist: Path, *, root: Path = ROOT) -> None:
             cwd=root, env=wheel_environment, check=True,
         )
         (staging / "SHA256SUMS").write_text(
-            "".join(f"{sha256(staging / name)}  {name}\n" for name in (sdk_name, wheel_name)),
+            "".join(f"{sha256(staging / name)}  {name}\n" for name in (sdk_name, wheel_name, mcp_name)),
             encoding="utf-8",
         )
         (staging / "RELEASE_NOTES.md").write_text(release_notes(cargo_version), encoding="utf-8")
         verify_assets(tag, staging, root=root)
-        for name in (sdk_name, wheel_name, "SHA256SUMS", "RELEASE_NOTES.md"):
+        for name in (sdk_name, wheel_name, mcp_name, "SHA256SUMS", "RELEASE_NOTES.md"):
             shutil.move(str(staging / name), str(dist / name))
 
 
@@ -266,7 +288,7 @@ print('Installed wheel bundled-DLL safe smoke passed')
 
 
 def verify_release(tag: str, dist: Path, *, root: Path = ROOT) -> None:
-    sdk, wheel = verify_assets(tag, dist, root=root)
+    sdk, wheel, mcp = verify_assets(tag, dist, root=root)
     require_windows()
     environment = clean_environment()
     with tempfile.TemporaryDirectory(prefix="logi-vhid-verify-") as temporary:
@@ -299,6 +321,7 @@ def verify_release(tag: str, dist: Path, *, root: Path = ROOT) -> None:
         subprocess.run(
             [str(python), "-I", "-c", PYTHON_SMOKE], cwd=workspace, env=environment, check=True,
         )
+        mcp_smoke.run_smoke(mcp, env=environment, cwd=workspace)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -310,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
     commands = {"build": build_release, "verify": verify_release, "verify-assets": verify_assets}
     try:
         commands[arguments.command](arguments.tag, arguments.dist)
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+    except (ValueError, OSError, subprocess.CalledProcessError, mcp_smoke.SmokeError) as error:
         print(f"release: {error}", file=sys.stderr)
         return 1
     print(f"{arguments.command}: OK")

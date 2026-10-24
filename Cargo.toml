@@ -1,24 +1,15 @@
-[package]
-name = "logi-vhid"
+[workspace]
+members = ["crates/logi-vhid", "crates/logi-vhid-mcp"]
+default-members = ["crates/logi-vhid", "crates/logi-vhid-mcp"]
+resolver = "2"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
-description = "Keyboard/mouse input through Logitech G HUB's virtual HID bus"
-repository = "https://github.com/lona-cn/logi-vhid"
 license = "MIT"
-exclude = ["**/__pycache__/**", "**/*.pyc", "**/*.pyo"]
-
-[package.metadata.docs.rs]
-targets = ["x86_64-pc-windows-msvc"]
-
-[lib]
-name = "logi_vhid"
-path = "src/lib.rs"
-crate-type = ["rlib", "cdylib", "staticlib"]
-
-[[bin]]
-name = "logi-vhid-demo"
-path = "src/main.rs"
+repository = "https://github.com/lona-cn/logi-vhid"
+readme = "README.md"
 
 [profile.release]
 opt-level = 2

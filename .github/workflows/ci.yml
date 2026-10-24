@@ -38,22 +38,32 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Check Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Run Rust tests without desktop input
-        run: cargo test --all-targets
+        run: cargo test --locked --workspace --all-targets
       - name: Compile documentation examples
-        run: cargo test --doc
+        run: cargo test --locked --workspace --doc
       - name: Build documentation
-        run: cargo rustdoc --lib -- -D warnings
+        run: cargo rustdoc --locked -p logi-vhid --lib -- -D warnings
       - name: Run Python tests without desktop input
         run: python -B -m unittest discover -s python/tests -p "test_*.py"
       - name: Run release tooling tests
         run: python -B -m unittest discover -s tools -p "test_*.py"
-      - name: Build release artifacts
+      - name: Build core release artifacts
         if: ${{ !inputs.skip_release_build }}
-        run: cargo build --release
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc -p logi-vhid
+      - name: Build MCP release executable
+        if: ${{ !inputs.skip_release_build }}
+        run: cargo build --locked --release --target x86_64-pc-windows-msvc -p logi-vhid-mcp --bin logi-vhid-mcp
       - name: Smoke test command line
         if: ${{ !inputs.skip_release_build }}
-        run: cargo run --release -- help
+        run: cargo run --locked --release --target x86_64-pc-windows-msvc -p logi-vhid --bin logi-vhid-demo -- help
+      - name: Smoke test MCP without desktop input
+        if: ${{ !inputs.skip_release_build }}
+        run: |
+          $metadata = cargo metadata --locked --format-version 1 --no-deps | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = Join-Path $metadata.target_directory "x86_64-pc-windows-msvc/release/logi-vhid-mcp.exe"
+          python tools/mcp_smoke.py --exe "$exe"
       - name: Check crates.io package without uploading
-        run: cargo publish --dry-run --locked --registry crates-io
+        run: cargo publish -p logi-vhid --dry-run --locked --registry crates-io

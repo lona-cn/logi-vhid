@@ -286,20 +286,24 @@ fn print_help() {
         "logi-vhid-demo <command>
 
 Commands:
-  info                         Show control/HID paths and PID gate state
-  cursor                       Print the current cursor position
-  type <text> [--mode MODE]    Type text (MODE: us, uk, de, fr, unicode)
-  move <dx> <dy>               Relative mouse movement
+  info                         Show paths/PID gate; opens/creates both devices
+  cursor                       Read cursor position without opening the bus
+  type <text> [--mode MODE]    Type text (MODE: us default, uk, de, fr, unicode)
+  move <dx> <dy>               Relative HID counts, not guaranteed pixels
   move-to <x> <y> [--mode M]   Absolute cursor movement
   click <x> <y> [--button B] [--mode M]
   double-click <x> <y> [--button B] [--mode M]
-  key <usage>                  Press a HID usage (decimal or 0x hex)
-  combo <u1,u2,...>            Press a chord and release in reverse
+  key <usage>                  Press/release a HID usage (decimal or 0x hex)
+  combo <u1,u2,...>            Press a HID chord and release in reverse
   window <title> <x> <y> [--button B] [--mode M]
-                               Click a client-relative point in a window
+                               Click a client-relative point; no activation
 
-Absolute modes: driver (default), win32, set
-Mouse buttons: left, right, middle, back, forward
+Absolute modes: driver (default, no fallback), win32, set
+Absolute/client coordinates are physical pixels; screen coordinates may be negative.
+Mouse buttons: left (default), right, middle, back, forward
+Put positional arguments before options (type also allows --mode before text).
+All commands except help/cursor open the G HUB bus, even Win32 input modes.
+Input targets the current desktop; window does not activate or focus its match.
 "
     );
 }

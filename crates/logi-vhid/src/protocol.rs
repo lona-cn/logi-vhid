@@ -1,7 +1,10 @@
 //! Wire format for the Logitech virtual HID control device.
 //!
-//! The control device accepts custom IOCTLs with fixed-size buffers.  These
-//! structs keep the byte layout in one place and make it testable.
+//! The control device accepts custom IOCTLs with fixed-size buffers. Use
+//! `to_bytes` to serialize these logical report/request structs; their Rust
+//! in-memory layout is not the wire format. Multi-byte fields are little-endian.
+//! The constants describe the driver's protocol, not a registration API:
+//! the high-level library deliberately does not register PIDs.
 
 /// Create a virtual device on the G HUB bus.
 pub const IOCTL_CREATE_DEVICE: u32 = 0x2A2040;
@@ -24,7 +27,9 @@ pub const DEVICE_KIND_JOYSTICK: u32 = 0x6A;
 pub const DEVICE_KIND_KEYBOARD: u32 = 0x6B;
 pub const DEVICE_KIND_MOUSE: u32 = 0x6D;
 
-/// Eight-byte boot-keyboard input report: modifiers, reserved, six key slots.
+/// Eight-byte boot-keyboard input report: modifier bitmask, reserved zero byte,
+/// then six non-modifier Keyboard/Keypad usages (zero means unused).
+/// Modifier bits 0–7 correspond to usages `0xE0`–`0xE7`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct KeyboardReport {
     pub modifiers: u8,
@@ -43,6 +48,9 @@ impl KeyboardReport {
 /// Eight-byte relative mouse report.
 ///
 /// Layout: buttons `u16`, dx `i16`, dy `i16`, wheel `i8`, pan `i8`.
+/// X/Y are relative HID counts (positive = right/down), not physical pixels.
+/// Wheel/pan are signed HID wheel units, not Win32 `WHEEL_DELTA` multiples.
+/// Button bits 0–4 represent left, right, middle, back and forward.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MouseReport {
     pub buttons: u16,
@@ -65,6 +73,8 @@ impl MouseReport {
 }
 
 /// Create-device request: `[8, 0, 0, 0, kind, 0, 0, 0]`.
+/// Only keyboard and mouse kinds are supported. `to_bytes` requires `kind` to fit
+/// in one byte: it debug-asserts this condition and otherwise truncates to `u8`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CreateDevice {
     pub kind: u32,

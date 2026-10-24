@@ -7,7 +7,12 @@ use crate::device::find_hid_path;
 use crate::error::{Error, Result};
 use crate::LogitechVirtualHid;
 
-/// Device paths and registered process IDs for the open virtual HID bus.
+/// A snapshot of device paths and registered process IDs.
+///
+/// Child paths are the first present HID interfaces matching the Logitech
+/// keyboard/mouse VID/PID system-wide, not verified descendants of `control_path`.
+/// They may be present even if that device was not selected in this object's
+/// [`crate::OpenOptions`]. A path's presence does not prove report delivery works.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeviceInfo {
     pub control_path: String,
@@ -17,14 +22,16 @@ pub struct DeviceInfo {
 }
 
 impl DeviceInfo {
-    /// A non-empty PID list means the driver zeroes mouse X/Y.
+    /// Whether this snapshot has any registered PIDs, which gate relative mouse
+    /// X/Y in the driver. Does not query current state or cover button/wheel input.
     pub fn pid_gate_active(&self) -> bool {
         !self.registered_pids.is_empty()
     }
 }
 
 impl LogitechVirtualHid {
-    /// Read the control path, child HID paths, and registered PID list.
+    /// Query the control path, system-wide matching HID paths and registered PIDs.
+    /// This does not create devices, change PID registration or test input.
     pub fn device_info(&self) -> Result<DeviceInfo> {
         Ok(DeviceInfo {
             control_path: self.device.path().to_string(),
@@ -39,8 +46,11 @@ impl LogitechVirtualHid {
         Ok(!self.device.registered_pids()?.is_empty())
     }
 
-    /// Return an error if registered processes have disabled mouse movement.
-    /// This check does not change the driver's state.
+    /// Check only whether the current registered-PID list is empty.
+    ///
+    /// A non-empty list returns [`Error::Protocol`]. Success does not verify that
+    /// a mouse was opened, its child exists, or movement works, and the list can
+    /// change after this query. This check does not change the driver's state.
     pub fn ensure_mouse_available(&self) -> Result<()> {
         let pids = self.device.registered_pids()?;
         if pids.is_empty() {

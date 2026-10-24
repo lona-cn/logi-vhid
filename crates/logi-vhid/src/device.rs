@@ -20,9 +20,14 @@ use crate::protocol::{
 /// Synchronous eight-byte HID report transport, statically dispatched.
 pub(crate) trait ReportSink {
     fn send_report(&self, code: u32, report: &[u8; 8]) -> Result<()>;
+
+    fn send_cleanup_report(&self, code: u32, report: &[u8; 8]) -> Result<()> {
+        self.send_report(code, report)
+    }
 }
 
-/// An open handle to the G HUB virtual bus control device.
+/// An owned control handle to the first enumerated G HUB virtual bus interface.
+/// Drop only closes the handle: no input release reports or child removal.
 pub(crate) struct Device {
     handle: HANDLE,
     path: String,
@@ -78,8 +83,9 @@ impl Device {
         Ok(returned as usize)
     }
 
-    /// Create one virtual device.  `ERROR_INVALID_PARAMETER` is treated as
-    /// "already exists" so `open()` is idempotent.
+    /// Create one shared virtual device. `ERROR_INVALID_PARAMETER` is accepted
+    /// as a possible "already exists" response; callers must check child presence
+    /// separately because this alone does not prove creation succeeded.
     pub(crate) fn create_device(&self, kind: u32) -> Result<()> {
         let input = CreateDevice { kind }.to_bytes();
         let mut output = [0u8; 8];
@@ -90,7 +96,8 @@ impl Device {
         }
     }
 
-    /// Remove one virtual device.  A missing device is treated as success.
+    /// Request removal of a shared virtual device. `ERROR_INVALID_PARAMETER`
+    /// (including an already missing child) is accepted without verifying removal.
     pub(crate) fn remove_device(&self, kind: u32) -> Result<()> {
         let input = RemoveDevice { kind }.to_bytes();
         let mut output = [0u8; 8];
@@ -226,7 +233,8 @@ fn find_interface_path() -> Result<String> {
         })
 }
 
-/// Find the HID child interface for a vendor/product id.
+/// Find the first system-wide HID interface whose path contains the VID/PID.
+/// This does not verify its relationship to the selected control interface.
 pub(crate) fn find_hid_path(vendor_id: u16, product_id: u16) -> Result<Option<String>> {
     let needle = format!("vid_{vendor_id:04x}&pid_{product_id:04x}");
     Ok(interface_paths(&HID_GUID)?

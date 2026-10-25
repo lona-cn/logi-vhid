@@ -55,7 +55,8 @@ fn arguments(args: impl IntoIterator<Item = OsString>) -> Result<Startup, ()> {
     }
     match first.as_deref().and_then(|arg| arg.to_str()) {
         None if first.is_none() => Ok(Startup::Serve { allow_input: false }),
-        Some("--allow-input") => Ok(Startup::Serve { allow_input: true }),
+        Some("--allow-input" | "--allow-input=true") => Ok(Startup::Serve { allow_input: true }),
+        Some("--allow-input=false") => Ok(Startup::Serve { allow_input: false }),
         Some("--help") => Ok(Startup::Help),
         Some("--version") => Ok(Startup::Version),
         _ => Err(()),
@@ -71,7 +72,7 @@ fn main() -> ExitCode {
     };
     let allow_input = match startup {
         Startup::Help => {
-            println!("logi-vhid-mcp [--allow-input]\n\nLocal stdio MCP server. Input is disabled by default.\n  --allow-input  Enable input capability; the host must still obtain approval for each operation.\n  --help         Print this help and exit.\n  --version      Print the version and exit.\n\nInput affects the foreground desktop, not an isolated window. Submission does not prove receipt. Never automatically retry. Screenshots are supplied externally. Stop and shutdown attempt release, but cannot guarantee release after forced termination or blocked native calls.");
+            println!("logi-vhid-mcp [--allow-input[=true|false]]\n\nLocal stdio MCP server. Input is disabled by default.\n  --allow-input  Enable input capability (same as =true); =false keeps input disabled.\n                 The host must still obtain approval for each operation.\n  --help         Print this help and exit.\n  --version      Print the version and exit.\n\nInput affects the foreground desktop, not an isolated window. Submission does not prove receipt. Never automatically retry. Screenshots are supplied externally. Stop and shutdown attempt release, but cannot guarantee release after forced termination or blocked native calls.");
             return ExitCode::SUCCESS;
         }
         Startup::Version => {
@@ -177,7 +178,7 @@ where
 mod tests {
     use super::*;
     #[test]
-    fn startup_parser_accepts_only_the_four_supported_forms() {
+    fn startup_parser_preserves_safe_defaults_and_rejects_unknown_arguments() {
         assert_eq!(arguments([]), Ok(Startup::Serve { allow_input: false }));
         assert_eq!(
             arguments(["--allow-input".into()]),
@@ -190,6 +191,27 @@ mod tests {
             vec!["--help", "--version"],
             vec!["stdio"],
             vec!["--unknown"],
+        ] {
+            assert!(arguments(args.into_iter().map(OsString::from)).is_err());
+        }
+    }
+
+    #[test]
+    fn startup_parser_accepts_explicit_boolean_input_settings() {
+        assert_eq!(
+            arguments(["--allow-input=false".into()]),
+            Ok(Startup::Serve { allow_input: false })
+        );
+        assert_eq!(
+            arguments(["--allow-input=true".into()]),
+            Ok(Startup::Serve { allow_input: true })
+        );
+        for args in [
+            vec!["--allow-input="],
+            vec!["--allow-input=TRUE"],
+            vec!["--allow-input=1"],
+            vec!["--allow-input", "false"],
+            vec!["--allow-input=false", "--allow-input"],
         ] {
             assert!(arguments(args.into_iter().map(OsString::from)).is_err());
         }

@@ -35,9 +35,9 @@ jobs:
         run: rustup toolchain install $env:RUSTUP_TOOLCHAIN --profile minimal
       - name: Install release build tooling
         run: python -m pip install -r tools/requirements-release.txt
-      - name: Build SDK, bundled-DLL wheel and MCP executable once
+      - name: Build SDK, wheel, executable, MCPB and Registry metadata once
         run: python tools/release.py build --tag "$env:RELEASE_TAG" --dist dist
-      - name: Verify SDK, wheel and MCP without desktop input
+      - name: Verify five release assets without desktop input
         run: python tools/release.py verify --tag "$env:RELEASE_TAG" --dist dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -68,7 +68,7 @@ jobs:
           if [[ "$RELEASE_TAG" == *-* ]]; then
             flags+=(--prerelease)
           fi
-          gh release create "$RELEASE_TAG" dist/*.zip dist/*.whl dist/*.exe dist/SHA256SUMS "${flags[@]}"
+          gh release create "$RELEASE_TAG" dist/*.zip dist/*.whl dist/*.exe dist/*.mcpb dist/server.json dist/SHA256SUMS "${flags[@]}"
 
   verify-published:
     if: github.event_name == 'release'
@@ -91,8 +91,9 @@ jobs:
         run: >-
           gh release download "$RELEASE_TAG" --dir dist
           --pattern "logi-vhid-*.zip" --pattern "logi_vhid-*.whl"
-          --pattern "logi-vhid-mcp-*.exe" --pattern SHA256SUMS
-      - name: Verify published hashes, versions and DLL consistency
+          --pattern "logi-vhid-mcp-*.exe" --pattern "logi-vhid-mcp-*.mcpb"
+          --pattern server.json --pattern SHA256SUMS
+      - name: Verify published hashes, versions, bundle and Registry consistency
         run: python tools/release.py verify-assets --tag "$RELEASE_TAG" --dist dist
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

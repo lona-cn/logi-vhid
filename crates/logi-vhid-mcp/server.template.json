@@ -1,0 +1,13 @@
+{
+  "$comment": "Build input only; not directly publishable. tools/release.py inserts the workspace version and exact release MCPB URL/hash into dist/server.json. Namespace ownership, host compatibility and publication are not verified by this template.",
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.lona-cn/logi-vhid-mcp",
+  "title": "logi-vhid MCP",
+  "description": "Windows desktop input and coordinate queries; input disabled by default, host approval required.",
+  "repository": {
+    "url": "https://github.com/lona-cn/logi-vhid",
+    "source": "github",
+    "subfolder": "crates/logi-vhid-mcp"
+  },
+  "websiteUrl": "https://github.com/lona-cn/logi-vhid/tree/master/crates/logi-vhid-mcp"
+}

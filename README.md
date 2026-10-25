@@ -93,7 +93,7 @@ Every command except help aliases and `cursor` opens the G HUB bus, **including 
 
 ### Local stdio MCP
 
-Download `logi-vhid-mcp-<Cargo version>-windows-x86_64-msvc.exe` from [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases), or build with `cargo build --locked -p logi-vhid-mcp --bin logi-vhid-mcp`. The executable is a separate release asset, not included in the SDK ZIP or Python wheel; their names, contents and APIs are unchanged.
+After a version containing MCP assets is published, download `logi-vhid-mcp-<Cargo version>-windows-x86_64-msvc.exe` or its native `.mcpb` bundle from [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases), or build with `cargo build --locked -p logi-vhid-mcp --bin logi-vhid-mcp`. Version **0.1.1 is being prepared**; the public v0.1.0 release has no MCP assets. The executable/bundle are independent assets, not included in the SDK ZIP or Python wheel; their names, contents and APIs are unchanged.
 
 See the [dedicated logi-vhid-mcp README](https://github.com/lona-cn/logi-vhid/blob/master/crates/logi-vhid-mcp/README.md#english) for installation, complete tool parameters, examples and troubleshooting.
 
@@ -103,7 +103,7 @@ Configure a local MCP host with the **absolute path** to that executable, for ex
 {
   "mcpServers": {
     "logi-vhid": {
-      "command": "C:\\Tools\\logi-vhid-mcp-0.1.0-windows-x86_64-msvc.exe",
+      "command": "C:\\Tools\\logi-vhid-mcp-0.1.1-windows-x86_64-msvc.exe",
       "args": []
     }
   }
@@ -134,6 +134,8 @@ Only one input operation is accepted at a time; another is rejected as `busy`, n
 EOF, Ctrl+C and service shutdown request cancellation and wait up to five seconds for worker cleanup. Synchronous driver I/O and cleanup can block beyond cooperative deadlines; shutdown then reports failure rather than claiming release. Forced termination, crashes and power loss have **no release guarantee**.
 
 This server provides no screenshots. Continue using the host's existing screenshot/observation tools; installing it does not automatically replace an existing computer-control tool. Driver availability and protocol smoke checks do not prove real input compatibility.
+Read the [privacy notice](docs/privacy.md#english) before sharing desktop data or sensitive input. Use [GitHub Issues](https://github.com/lona-cn/logi-vhid/issues) for ordinary support; follow the [security reporting policy](SECURITY.md#english) for vulnerabilities. MCPB/Cline installation, host support status and submission materials are linked from the dedicated MCP README.
+
 
 
 ### C/C++ SDK
@@ -346,7 +348,7 @@ Rust 支持按键按下/释放、组合键、长按、重复按键、按布局�
 
 ### 本地 stdio MCP
 
-从 [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases) 下载 `logi-vhid-mcp-<Cargo 版本>-windows-x86_64-msvc.exe`，或用 `cargo build --locked -p logi-vhid-mcp --bin logi-vhid-mcp` 构建。exe 是独立的发布附件，不放进 SDK ZIP 或 Python wheel；原有包名、内容与接口不变。
+含 MCP 资产的版本发布后，从 [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases) 下载 `logi-vhid-mcp-<Cargo 版本>-windows-x86_64-msvc.exe` 或其原生 `.mcpb` 包，也可用 `cargo build --locked -p logi-vhid-mcp --bin logi-vhid-mcp` 构建。当前准备版本为 **0.1.1**；公开 v0.1.0 没有 MCP 附件，需先正式发版。exe/包是独立附件，不放进 SDK ZIP 或 Python wheel；原有包名、内容与接口不变。
 
 安装、完整工具参数、调用示例和排错见 [logi-vhid-mcp 独立 README](https://github.com/lona-cn/logi-vhid/blob/master/crates/logi-vhid-mcp/README.md#简体中文)。
 
@@ -356,7 +358,7 @@ Rust 支持按键按下/释放、组合键、长按、重复按键、按布局�
 {
   "mcpServers": {
     "logi-vhid": {
-      "command": "C:\\Tools\\logi-vhid-mcp-0.1.0-windows-x86_64-msvc.exe",
+      "command": "C:\\Tools\\logi-vhid-mcp-0.1.1-windows-x86_64-msvc.exe",
       "args": []
     }
   }
@@ -387,6 +389,8 @@ Rust 支持按键按下/释放、组合键、长按、重复按键、按布局�
 EOF、Ctrl+C 和服务退出会请求取消，最多等待五秒完成 worker 清理。同步驱动 I/O 和清理可能阻塞，超过合作式截止时间；此时退出会报告失败，不会声称已释放。强杀、崩溃或断电情况下**无法保证释放**。
 
 服务不提供截图。截图和观察继续使用宿主现有工具；安装 MCP 不会自动替换既有 computer 控制工具。驱动可查询、协议冒烟检查通过，都不能证明目标软件接受真实输入。
+分享桌面数据或敏感输入前，请阅读 [隐私说明](docs/privacy.md#简体中文)。普通支持使用 [GitHub Issues](https://github.com/lona-cn/logi-vhid/issues)，漏洞报告遵循 [安全报告政策](SECURITY.md#简体中文)。MCPB/Cline 安装、宿主支持状态和上架素材见 MCP 独立 README。
+
 
 
 ### C/C++ SDK

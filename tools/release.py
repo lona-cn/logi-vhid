@@ -1,4 +1,4 @@
-"""Build and validate the Windows x64 SDK, ctypes wheel, and local MCP executable.
+"""Build and validate the Windows x64 SDK, wheel, MCP executable and publication assets.
 
 verify-assets deliberately performs no extraction, native loading, or subprocesses.
 """
@@ -33,6 +33,12 @@ SDK_MEMBERS = (
     "LICENSE", "README.md", "examples/CMakeLists.txt", "examples/smoke.c",
     "examples/smoke.cpp",
 )
+MCP_SOURCE = Path("crates/logi-vhid-mcp")
+MCP_ENTRY = "server/logi-vhid-mcp.exe"
+BUNDLE_MEMBERS = {"manifest.json", MCP_ENTRY, "icon.png", "LICENSE", "README.md"}
+REPOSITORY = "https://github.com/lona-cn/logi-vhid"
+REGISTRY_SCHEMA = "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
+REGISTRY_NAME = "io.github.lona-cn/logi-vhid-mcp"
 
 
 def release_version(tag: str, root: Path) -> tuple[str, str]:
@@ -53,11 +59,13 @@ def release_version(tag: str, root: Path) -> tuple[str, str]:
     return cargo_version, str(Version(cargo_version))
 
 
-def artifact_names(cargo_version: str, python_version: str) -> tuple[str, str, str]:
+def artifact_names(cargo_version: str, python_version: str) -> tuple[str, str, str, str, str]:
     return (
         f"logi-vhid-{cargo_version}-windows-x86_64-msvc.zip",
         f"logi_vhid-{python_version}-py3-none-win_amd64.whl",
         f"logi-vhid-mcp-{cargo_version}-windows-x86_64-msvc.exe",
+        f"logi-vhid-mcp-{cargo_version}-windows-x86_64-msvc.mcpb",
+        "server.json",
     )
 
 
@@ -95,6 +103,113 @@ def archive_members(archive: zipfile.ZipFile) -> set[str]:
     return names
 
 
+def json_object(data: bytes) -> dict:
+    try:
+        value = json.loads(data)
+    except (ValueError, UnicodeDecodeError) as error:
+        raise ValueError(f"invalid publication JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise ValueError("publication JSON must be an object")
+    return value
+
+
+def verify_bundle_manifest(manifest: dict, version: str) -> None:
+    expected_server = {
+        "type": "binary", "entry_point": MCP_ENTRY,
+        "mcp_config": {
+            "command": "${__dirname}/" + MCP_ENTRY,
+            "args": ["--allow-input=${user_config.allow_input}"],
+        },
+    }
+    if (manifest.get("manifest_version") != "0.3"
+            or manifest.get("name") != "logi-vhid-mcp"
+            or manifest.get("version") != version
+            or manifest.get("server") != expected_server
+            or manifest.get("compatibility") != {"platforms": ["win32"]}):
+        raise ValueError("MCPB manifest identity, version, binary launch, or platform mismatch")
+    user_config = manifest.get("user_config")
+    if not isinstance(user_config, dict) or set(user_config) != {"allow_input"}:
+        raise ValueError("MCPB must expose only the optional input capability setting")
+    allow_input = user_config["allow_input"]
+    if (not isinstance(allow_input, dict)
+            or allow_input.get("type") != "boolean"
+            or allow_input.get("required") is not False
+            or allow_input.get("default") is not False
+            or not isinstance(allow_input.get("title"), str) or not allow_input["title"].strip()
+            or not isinstance(allow_input.get("description"), str) or not allow_input["description"].strip()
+            or set(allow_input) - {"type", "title", "description", "required", "default"}):
+        raise ValueError("MCPB must default to a disabled optional Boolean input setting")
+    expected_metadata = {
+        "repository": {"type": "git", "url": REPOSITORY},
+        "homepage": REPOSITORY,
+        "documentation": REPOSITORY + "/blob/master/crates/logi-vhid-mcp/README.md",
+        "support": REPOSITORY + "/issues",
+        "license": "MIT", "icon": "icon.png",
+        "privacy_policies": [REPOSITORY + "/blob/master/docs/privacy.md"],
+    }
+    if any(manifest.get(key) != value for key, value in expected_metadata.items()):
+        raise ValueError("MCPB license, privacy, documentation, support, or repository metadata mismatch")
+    author = manifest.get("author")
+    if (not isinstance(manifest.get("description"), str) or not manifest["description"].strip()
+            or not isinstance(author, dict) or not isinstance(author.get("name"), str)
+            or not author["name"].strip()):
+        raise ValueError("MCPB is missing its description or author")
+
+
+def registry_package(version: str, bundle: Path) -> dict:
+    return {
+        "registryType": "mcpb",
+        "identifier": f"{REPOSITORY}/releases/download/v{version}/{bundle.name}",
+        "version": version,
+        "fileSha256": sha256(bundle),
+        "transport": {"type": "stdio"},
+    }
+
+
+def verify_registry(metadata: dict, version: str, bundle: Path) -> None:
+    if (metadata.get("$schema") != REGISTRY_SCHEMA
+            or metadata.get("name") != REGISTRY_NAME
+            or metadata.get("version") != version
+            or metadata.get("repository") != {
+                "url": REPOSITORY, "source": "github", "subfolder": MCP_SOURCE.as_posix(),
+            }
+            or metadata.get("websiteUrl") != REPOSITORY + "/tree/master/crates/logi-vhid-mcp"
+            or metadata.get("packages") != [registry_package(version, bundle)]
+            or "remotes" in metadata):
+        raise ValueError("Registry metadata must identify this version, exact MCPB URL/hash, and stdio")
+    for key in ("title", "description"):
+        value = metadata.get(key)
+        if not isinstance(value, str) or not 1 <= len(value.strip()) <= 100:
+            raise ValueError(f"Registry metadata is missing a valid {key}")
+
+
+def build_mcp_distribution(
+    version: str, executable: Path, dist: Path, *, root: Path = ROOT,
+) -> tuple[Path, Path]:
+    """Package an existing executable; no compilation, execution, or network access."""
+    source = Path(root) / MCP_SOURCE
+    manifest = json_object((source / "manifest.json").read_bytes())
+    manifest["version"] = version
+    verify_bundle_manifest(manifest, version)
+    _, _, _, bundle_name, registry_name = artifact_names(version, str(Version(version)))
+    dist = Path(dist)
+    dist.mkdir(parents=True, exist_ok=True)
+    bundle, registry = dist / bundle_name, dist / registry_name
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2) + "\n")
+        archive.write(executable, MCP_ENTRY)
+        archive.write(source / "icon.png", "icon.png")
+        archive.write(Path(root) / "LICENSE", "LICENSE")
+        archive.write(source / "README.md", "README.md")
+    metadata = json_object((source / "server.template.json").read_bytes())
+    metadata.pop("$comment", None)
+    metadata["version"] = version
+    metadata["packages"] = [registry_package(version, bundle)]
+    verify_registry(metadata, version, bundle)
+    registry.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    return bundle, registry
+
+
 def verify_checksums(dist: Path, expected: set[str]) -> None:
     entries = {}
     for line in (dist / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
@@ -106,26 +221,42 @@ def verify_checksums(dist: Path, expected: set[str]) -> None:
             raise ValueError(f"unexpected or unsafe checksum name: {name!r}")
         entries[name] = digest.lower()
     if set(entries) != expected:
-        raise ValueError("SHA256SUMS must list exactly the SDK, wheel, and MCP executable basenames")
+        raise ValueError("SHA256SUMS must list exactly the SDK, wheel, exe, MCPB, and server.json basenames")
     for name, digest in entries.items():
         path = dist / name
         if path.is_symlink() or not path.is_file() or sha256(path) != digest:
             raise ValueError(f"missing artifact or SHA256 mismatch: {name}")
 
 
-def verify_assets(tag: str, dist: Path, *, root: Path = ROOT) -> tuple[Path, Path, Path]:
+def verify_assets(tag: str, dist: Path, *, root: Path = ROOT) -> tuple[Path, Path, Path, Path, Path]:
     cargo_version, python_version = release_version(tag, Path(root))
     dist = Path(dist).resolve()
-    sdk_name, wheel_name, mcp_name = artifact_names(cargo_version, python_version)
-    if sorted(path.name for path in dist.glob("*.whl")) != [wheel_name]:
-        raise ValueError(f"expected exactly one wheel named {wheel_name}")
-    if sorted(path.name for path in dist.glob("*.zip")) != [sdk_name]:
-        raise ValueError(f"expected exactly one SDK named {sdk_name}")
-    if sorted(path.name for path in dist.iterdir() if path.suffix.casefold() == ".exe") != [mcp_name]:
-        raise ValueError(f"expected exactly one MCP executable named {mcp_name}")
-    sdk, wheel, mcp = dist / sdk_name, dist / wheel_name, dist / mcp_name
+    sdk_name, wheel_name, mcp_name, bundle_name, registry_name = artifact_names(cargo_version, python_version)
+    for suffix, expected in (
+        (".whl", wheel_name), (".zip", sdk_name), (".exe", mcp_name),
+        (".mcpb", bundle_name), (".json", registry_name),
+    ):
+        if sorted(path.name for path in dist.iterdir() if path.suffix.casefold() == suffix) != [expected]:
+            raise ValueError(f"expected exactly one {suffix} artifact named {expected}")
+    sdk, wheel, mcp, bundle, registry = (
+        dist / name for name in (sdk_name, wheel_name, mcp_name, bundle_name, registry_name)
+    )
     try:
-        verify_checksums(dist, {sdk_name, wheel_name, mcp_name})
+        verify_checksums(dist, {sdk_name, wheel_name, mcp_name, bundle_name, registry_name})
+        with zipfile.ZipFile(bundle) as bundle_zip:
+            if archive_members(bundle_zip) != BUNDLE_MEMBERS:
+                raise ValueError("MCPB must contain exactly its manifest, executable, icon, license, and README")
+            for name in BUNDLE_MEMBERS:
+                member = bundle_zip.getinfo(name)
+                if member.is_dir() or stat.S_ISDIR(member.external_attr >> 16) or not bundle_zip.read(name):
+                    raise ValueError(f"MCPB requires a nonempty regular file: {name}")
+            verify_bundle_manifest(json_object(bundle_zip.read("manifest.json")), cargo_version)
+            executable = mcp.read_bytes()
+            if not executable or bundle_zip.read(MCP_ENTRY) != executable:
+                raise ValueError("MCPB and standalone MCP executable must be nonempty and byte-identical")
+            if bundle_zip.testzip() is not None:
+                raise ValueError("MCPB contains corrupt members")
+        verify_registry(json_object(registry.read_bytes()), cargo_version, bundle)
         name, version, build, tags = parse_wheel_filename(wheel.name)
         if (canonicalize_name(name) != "logi-vhid" or str(version) != python_version
                 or build or tags != {Tag("py3", "none", "win_amd64")}):
@@ -164,7 +295,7 @@ def verify_assets(tag: str, dist: Path, *, root: Path = ROOT) -> tuple[Path, Pat
                     raise ValueError("archive contains corrupt members")
     except (OSError, zipfile.BadZipFile, KeyError) as error:
         raise ValueError(f"invalid release assets: {error}") from error
-    return sdk, wheel, mcp
+    return sdk, wheel, mcp, bundle, registry
 
 
 def clean_environment() -> dict[str, str]:
@@ -184,9 +315,15 @@ def release_notes(version: str) -> str:
 
 Target: Windows 10 1703+ x86_64, MSVC ({TARGET}). Python >=3.12.
 
-Assets: native C/C++ SDK ZIP, ctypes py3-none-win_amd64 wheel, and versioned
-logi-vhid-mcp Windows x64 executable. The SDK and wheel contain the same DLL.
-SHA256SUMS covers exactly these three assets.
+Assets: native C/C++ SDK ZIP, ctypes py3-none-win_amd64 wheel, versioned
+logi-vhid-mcp Windows x64 executable, native MCPB, and Registry server.json.
+SHA256SUMS covers exactly these five assets. The SDK and wheel contain the same
+DLL; the MCPB contains the exact standalone executable that the safe smoke runs.
+The MCPB needs no Node/Python launcher. Its optional input argument list defaults
+to empty (input disabled); only an explicit --allow-input item enables capability.
+The host must still obtain approval for each operation. Registry metadata names
+the exact release MCPB URL and SHA-256; publication and namespace authorization
+remain manual and are not claimed by creating these assets.
 This distribution does not include a driver or G HUB installer.
 The native DLL requires the Microsoft Visual C++ v14 x64 runtime, not bundled here.
 This gate does not claim validation on a clean Windows installation.
@@ -195,8 +332,9 @@ one does not send key/button release reports or remove those devices.
 
 ## Acceptance before publication
 
-The automatic release gate verifies artifact metadata, paths, checksums and
-DLL equality; on Windows it installs the wheel in a fresh environment and
+The automatic release gate verifies artifact metadata, paths, checksums,
+DLL/executable equality, MCPB safe defaults, and Registry package binding;
+on Windows it installs the wheel in a fresh environment and
 compiles/runs C and C++ SDK consumers. The C/C++ and wheel smoke checks use only
 null-handle and error-query paths. The MCP safe stdio smoke starts without
 --allow-input, performs initialize/discovery and desktop information queries,
@@ -244,10 +382,12 @@ def build_release(tag: str, dist: Path, *, root: Path = ROOT) -> None:
     mcp = native / "logi-vhid-mcp.exe"
     if not mcp.is_file():
         raise ValueError("Cargo did not produce logi-vhid-mcp.exe")
-    sdk_name, wheel_name, mcp_name = artifact_names(cargo_version, python_version)
+    names = artifact_names(cargo_version, python_version)
+    sdk_name, wheel_name, mcp_name, bundle_name, registry_name = names
     with tempfile.TemporaryDirectory(prefix="logi-vhid-build-", dir=dist.parent) as temporary:
         staging = Path(temporary)
         shutil.copy2(mcp, staging / mcp_name)
+        build_mcp_distribution(cargo_version, staging / mcp_name, staging, root=root)
         with zipfile.ZipFile(staging / sdk_name, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.write(dll, "bin/logi_vhid.dll")
             archive.write(import_library, "lib/logi_vhid.dll.lib")
@@ -263,12 +403,12 @@ def build_release(tag: str, dist: Path, *, root: Path = ROOT) -> None:
             cwd=root, env=wheel_environment, check=True,
         )
         (staging / "SHA256SUMS").write_text(
-            "".join(f"{sha256(staging / name)}  {name}\n" for name in (sdk_name, wheel_name, mcp_name)),
+            "".join(f"{sha256(staging / name)}  {name}\n" for name in names),
             encoding="utf-8",
         )
         (staging / "RELEASE_NOTES.md").write_text(release_notes(cargo_version), encoding="utf-8")
         verify_assets(tag, staging, root=root)
-        for name in (sdk_name, wheel_name, mcp_name, "SHA256SUMS", "RELEASE_NOTES.md"):
+        for name in (*names, "SHA256SUMS", "RELEASE_NOTES.md"):
             shutil.move(str(staging / name), str(dist / name))
 
 
@@ -288,7 +428,7 @@ print('Installed wheel bundled-DLL safe smoke passed')
 
 
 def verify_release(tag: str, dist: Path, *, root: Path = ROOT) -> None:
-    sdk, wheel, mcp = verify_assets(tag, dist, root=root)
+    sdk, wheel, mcp, bundle, registry = verify_assets(tag, dist, root=root)
     require_windows()
     environment = clean_environment()
     with tempfile.TemporaryDirectory(prefix="logi-vhid-verify-") as temporary:

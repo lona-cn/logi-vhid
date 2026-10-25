@@ -19,7 +19,7 @@ A local **stdio MCP server for Windows x64 keyboard and mouse input**. It calls 
 
 ### Download and configure
 
-For a published release, download these files from [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases):
+After a version containing MCP assets is published, download the following from [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases). **0.1.1 is being prepared; public v0.1.0 has no MCP assets.** A release must be published before these new packages can be installed by download.
 
 - `logi-vhid-mcp-<version>-windows-x86_64-msvc.exe`
 - `SHA256SUMS`
@@ -29,7 +29,7 @@ The MCP executable is a separate release asset, not part of the C/C++ SDK ZIP or
 To inspect its hash from the download directory:
 
 ```powershell
-Get-FileHash .\logi-vhid-mcp-0.1.0-windows-x86_64-msvc.exe -Algorithm SHA256
+Get-FileHash .\logi-vhid-mcp-0.1.1-windows-x86_64-msvc.exe -Algorithm SHA256
 ```
 
 Compare it with the entry for the same filename in the release's `SHA256SUMS`. Matching hashes establish consistency with that manifest, not trust in an unknown publisher. If Windows reports a missing Microsoft Visual C++ runtime DLL, use Microsoft's official [x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist); this server does not install system components.
@@ -40,7 +40,7 @@ For a host using the `mcpServers` configuration format:
 {
   "mcpServers": {
     "logi-vhid": {
-      "command": "C:\\Tools\\logi-vhid-mcp-0.1.0-windows-x86_64-msvc.exe",
+      "command": "C:\\Tools\\logi-vhid-mcp-0.1.1-windows-x86_64-msvc.exe",
       "args": []
     }
   }
@@ -51,7 +51,36 @@ Use an **absolute executable path**. Other hosts may use a different configurati
 
 With `args: []`, valid input requests return `input_disabled` before native target checks or input-device initialization. To permit input, the user must explicitly choose `args: ["--allow-input"]` and restart the server. **This startup flag is not approval of each operation.** The host remains responsible for obtaining approval for the exact target, action and values. There is no `approved` request field or built-in confirmation dialog.
 
-Only these startup forms are accepted: no arguments, `--allow-input`, `--help`, or `--version`. Help/version print text and exit without creating a worker or opening the driver. Unknown, repeated or combined arguments exit with code 2.
+Startup accepts no arguments, `--allow-input`, `--allow-input=true`, `--allow-input=false`, `--help`, or `--version`, with at most one argument. The explicit Boolean forms support bundle settings; only lowercase `true` and `false` are accepted. No argument or `--allow-input=false` keeps input disabled. Help/version print text and exit without creating a worker or opening the driver. Unknown, repeated or combined arguments exit with code 2.
+
+### Native MCPB installation
+
+For a Windows x64 host that supports **native binary MCPB bundles**, use `logi-vhid-mcp-0.1.1-windows-x86_64-msvc.mcpb` after publication. Compare its `Get-FileHash -Algorithm SHA256` result with the same filename in `SHA256SUMS`, then use the host's local bundle import/install control. Review the publisher, permissions and [privacy notice](https://github.com/lona-cn/logi-vhid/blob/master/docs/privacy.md#english) before accepting. A `.mcpb` file is a packaging format, **not** approval or an automatic submission to Claude's official directory.
+
+The bundle contains `manifest.json`, `server/logi-vhid-mcp.exe`, `icon.png`, `LICENSE` and this README. It uses the same executable as the standalone asset; no Node.js/Python launcher or separate SDK DLL is needed. The manifest supports only `win32`.
+
+In the host's bundle settings, keep **`allow_input` disabled (`false`)** for queries. Only when explicitly permitting input, enable the Boolean setting and restart/reconnect the server if required by the host. The manifest passes `--allow-input=false` or `--allow-input=true` directly to the executable; there is no launcher, environment-variable permission switch or automatic approval. Per-operation approval remains required.
+
+### Cline: shortest manual setup
+
+Follow [Cline's official MCP configuration guide](https://docs.cline.bot/mcp/configuring-mcp-servers): **MCP Servers → Configure → Configure MCP Servers**, then merge the `mcpServers` entry above into the existing settings (do not replace other servers). Use the downloaded exe's absolute path and `args: []`; keep automatic approval off and do not add input tools to an `autoApprove` list. Reconnect and confirm that the six tools appear, then call `vhid_desktop_info` with `{}`. Missing G HUB does not prevent that query. Cline CLI can use the same stdio entry in its own MCP settings.
+
+This is a local stdio configuration, not a remote URL, npm package or Cline-specific plugin. Input is opt-in via `["--allow-input"]` and still needs host approval for every concrete operation. Cline marketplace inclusion and actual host/input compatibility are **not verified**; use the host's existing observation tools, not this server, for screenshots.
+
+### Support status and policies
+
+The following are installation targets, **not a tested compatibility matrix**. No host version or test date is claimed.
+
+| Target | Prepared installation route | Status |
+| --- | --- | --- |
+| Claude Desktop / another native MCPB-capable Windows host | Local `.mcpb` import; depends on native binary and array-setting support | Not host-tested; not officially listed/certified |
+| Cline IDE extension / CLI on Windows | Manual local stdio exe configuration | Not host-tested; marketplace submission not performed |
+| Other local stdio MCP hosts on Windows x64 | Absolute exe path and empty args | Not host-tested; approval/observation controls must be checked |
+| Official MCP Registry | Generated `server.json` pointing to the exact release MCPB | Metadata prepared only; namespace/publication not registered |
+| Real Windows/G HUB/target-application input | Separate explicitly authorized acceptance | Not performed for this publication preparation; no demo recording supplied |
+
+Ordinary support: [GitHub Issues](https://github.com/lona-cn/logi-vhid/issues). Read the [privacy notice](https://github.com/lona-cn/logi-vhid/blob/master/docs/privacy.md#english) and [security policy](https://github.com/lona-cn/logi-vhid/blob/master/SECURITY.md#english). GitHub Private Vulnerability Reporting is currently disabled and no dedicated private intake is advertised: use a public issue **only to coordinate contact without vulnerability details, PoCs, secrets or user data**. Do not treat that issue as confidential. Copy-ready descriptions and channel checklists: [LISTING.md](https://github.com/lona-cn/logi-vhid/blob/master/crates/logi-vhid-mcp/LISTING.md).
+
 
 ### Tools and limits
 
@@ -206,7 +235,7 @@ python tools/mcp_smoke.py --exe "$exe"
 
 The smoke checks initialize, discovery, desktop information, rejection of a valid input request, stop without devices, and normal EOF exit. A headless desktop may return a structured error instead of coordinates. These checks do not establish real input compatibility; hardware/target-application acceptance requires separate, concrete authorization.
 
-For the shared version, SDK/wheel/exe build, checksums and release acceptance, see the [release maintenance guide](https://github.com/lona-cn/logi-vhid/blob/master/docs/releasing.md). License: [MIT](https://github.com/lona-cn/logi-vhid/blob/master/LICENSE).
+For the shared version, SDK/wheel/exe/MCPB/Registry metadata build, five-asset checksums and release acceptance, see the [release maintenance guide](https://github.com/lona-cn/logi-vhid/blob/master/docs/releasing.md). License: [MIT](https://github.com/lona-cn/logi-vhid/blob/master/LICENSE).
 
 ## 简体中文
 
@@ -225,7 +254,7 @@ For the shared version, SDK/wheel/exe build, checksums and release acceptance, s
 
 ### 下载与配置
 
-版本发布后，从 [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases) 下载：
+含 MCP 资产的版本发布后，从 [GitHub Releases](https://github.com/lona-cn/logi-vhid/releases) 下载。**当前准备版本为 0.1.1；公开 v0.1.0 没有 MCP 附件。** 新包须先正式发版才能从 Release 安装。
 
 - `logi-vhid-mcp-<版本>-windows-x86_64-msvc.exe`
 - `SHA256SUMS`
@@ -235,7 +264,7 @@ MCP exe 是独立附件，不在 C/C++ SDK ZIP 或 Python wheel 内；使用它�
 在下载目录查看哈希：
 
 ```powershell
-Get-FileHash .\logi-vhid-mcp-0.1.0-windows-x86_64-msvc.exe -Algorithm SHA256
+Get-FileHash .\logi-vhid-mcp-0.1.1-windows-x86_64-msvc.exe -Algorithm SHA256
 ```
 
 与同一 Release 的 `SHA256SUMS` 中对应文件名的记录比较。哈希一致只能证明文件与清单一致，不能证明未知发布者可信。如果 Windows 提示缺少 Microsoft Visual C++ 运行库 DLL，请使用微软官方的 [x64 Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)；服务本身不会安装系统组件。
@@ -246,7 +275,7 @@ Get-FileHash .\logi-vhid-mcp-0.1.0-windows-x86_64-msvc.exe -Algorithm SHA256
 {
   "mcpServers": {
     "logi-vhid": {
-      "command": "C:\\Tools\\logi-vhid-mcp-0.1.0-windows-x86_64-msvc.exe",
+      "command": "C:\\Tools\\logi-vhid-mcp-0.1.1-windows-x86_64-msvc.exe",
       "args": []
     }
   }
@@ -257,7 +286,36 @@ Get-FileHash .\logi-vhid-mcp-0.1.0-windows-x86_64-msvc.exe -Algorithm SHA256
 
 `args: []` 下，合法输入请求会在检查原生目标、初始化输入设备之前返回 `input_disabled`。只有用户明确允许输入时，才将 `args` 改为 `["--allow-input"]` 并重启服务。**启动开关不代表每次操作均已获批**；宿主仍须就具体目标、动作和值取得批准。请求没有 `approved` 字段，也没有内置确认窗口。
 
-启动只接受四种形式：无参数、单独 `--allow-input`、单独 `--help`、单独 `--version`。帮助和版本会输出文本并退出，不创建 worker、不打开驱动。未知、重复或组合参数退出码为 2。
+启动支持无参数，或单独传入 `--allow-input`、`--allow-input=true`、`--allow-input=false`、`--help`、`--version`，最多一个参数。布尔形式用于包设置，只接受小写 `true` 和 `false`；无参数或 `--allow-input=false` 均禁止输入。帮助和版本会输出文本并退出，不创建 worker、不打开驱动。未知、重复或组合参数退出码为 2。
+
+### 原生 MCPB 安装
+
+对于支持**原生 binary MCPB 包**的 Windows x64 宿主，版本发布后可使用 `logi-vhid-mcp-0.1.1-windows-x86_64-msvc.mcpb`。用 `Get-FileHash -Algorithm SHA256` 与 `SHA256SUMS` 同名记录比较后，通过宿主的本地包导入/安装入口安装。接受前检查发布者、权限及 [隐私说明](https://github.com/lona-cn/logi-vhid/blob/master/docs/privacy.md#简体中文)。`.mcpb` 是打包格式，**不代表获批，也不是向 Claude 官方目录自动投稿**。
+
+包内固定为 `manifest.json`、`server/logi-vhid-mcp.exe`、`icon.png`、`LICENSE` 和本 README，与独立 exe 使用同一个程序，不需要 Node.js/Python 启动器或单独的 SDK DLL。manifest 平台仅为 `win32`。
+
+宿主包设置中的 **`allow_input` 默认保持关闭（`false`）**，用于查询。只有明确允许输入时才开启这个布尔设置，并按宿主要求重启/重连。manifest 会直接向 exe 传入 `--allow-input=false` 或 `--allow-input=true`，不使用启动器、环境变量授权开关或自动批准。逐次操作批准仍不可省略。
+
+### Cline 最短手动接入
+
+按 [Cline 官方 MCP 配置说明](https://docs.cline.bot/mcp/configuring-mcp-servers)，进入 **MCP Servers → Configure → Configure MCP Servers**，将上面的 `mcpServers` 条目合并到现有配置，不覆盖其他服务。使用下载 exe 的绝对路径和 `args: []`，保持自动批准关闭，不将输入工具加入 `autoApprove` 列表。重连后确认六个工具出现，先用 `{}` 调用 `vhid_desktop_info`；该查询不需要 G HUB。Cline CLI 可在其自身 MCP 设置中使用同一个 stdio 条目。
+
+这是本地 stdio 配置，不是远程 URL、npm 包或 Cline 专用插件。只有显式选择 `["--allow-input"]` 才启用输入，且宿主仍需逐次批准具体操作。**尚未验证 Cline 市场收录或实际宿主/输入兼容性**；截图继续使用宿主既有观察工具。
+
+### 支持状态与政策
+
+以下是准备接入的目标，**不是已通过测试的兼容矩阵**，不声称任何宿主测试版本或日期。
+
+| 目标 | 已准备的安装方式 | 状态 |
+| --- | --- | --- |
+| Claude Desktop / 其他支持原生 MCPB 的 Windows 宿主 | 本地导入 `.mcpb`；依赖 binary 及数组设置支持 | 未实测宿主，未官方收录/认证 |
+| Windows 上的 Cline IDE 扩展 / CLI | 手动配置本地 stdio exe | 未实测宿主，未提交市场 |
+| 其他 Windows x64 本地 stdio MCP 宿主 | exe 绝对路径和空参数 | 未实测，需核对批准/观察控制 |
+| 官方 MCP Registry | 生成指向精确 Release MCPB 的 `server.json` | 仅准备元数据，未登记 namespace/发布 |
+| 真实 Windows/G HUB/目标应用输入 | 另行明确授权后验收 | 本次上架准备未执行，无演示录屏 |
+
+普通支持：[GitHub Issues](https://github.com/lona-cn/logi-vhid/issues)。请阅读 [隐私说明](https://github.com/lona-cn/logi-vhid/blob/master/docs/privacy.md#简体中文) 和 [安全政策](https://github.com/lona-cn/logi-vhid/blob/master/SECURITY.md#简体中文)。仓库目前未启用 GitHub Private Vulnerability Reporting，也没有已公布的专用私密接收通道：公开 Issue **只能用于不含漏洞细节、PoC、密钥或用户数据的联系协调**，不是保密报告。可复制的介绍与渠道清单见 [LISTING.md](https://github.com/lona-cn/logi-vhid/blob/master/crates/logi-vhid-mcp/LISTING.md)。
+
 
 ### 工具与参数
 
@@ -412,4 +470,4 @@ python tools/mcp_smoke.py --exe "$exe"
 
 冒烟检查包含 initialize、发现工具、桌面查询、合法输入被拒绝、无设备 stop 和正常 EOF 退出。无交互桌面时可返回明确的工具错误，不会伪造坐标。这些检查不能证明真实输入兼容性；硬件或目标软件验收须另行取得具体授权。
 
-共用版本、SDK/wheel/exe 构建、校验和及发布验收见 [发布维护说明](https://github.com/lona-cn/logi-vhid/blob/master/docs/releasing.md)。采用 [MIT 许可证](https://github.com/lona-cn/logi-vhid/blob/master/LICENSE)。
+共用版本、SDK/wheel/exe/MCPB/Registry 元数据构建、五项资产校验和及发布验收见 [发布维护说明](https://github.com/lona-cn/logi-vhid/blob/master/docs/releasing.md)。采用 [MIT 许可证](https://github.com/lona-cn/logi-vhid/blob/master/LICENSE)。

@@ -2,18 +2,29 @@ use logi_vhid::{hid, AbsoluteMode, KeyboardLayout, MouseButton, TextMode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+const DEFAULT_HOLD_MS: u64 = 20;
+const MAX_HOLD_MS: u64 = 5_000;
+const DEFAULT_TIMEOUT_MS: u64 = 10_000;
+const MAX_TIMEOUT_MS: u64 = 30_000;
+const MAX_TEXT_SCALARS: usize = 1_024;
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EmptyParams {}
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DesktopParams {
+    /// Optional window identity to inspect. Omit or use null for the current desktop snapshot.
     pub window: Option<TargetWindow>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TargetWindow {
+    /// Nonzero Windows HWND as a 0x-prefixed hexadecimal string that fits a native x64 handle.
+    #[schemars(pattern(r"^0x0*[1-9a-fA-F][0-9a-fA-F]*$"))]
     pub hwnd: String,
+    /// Process ID observed with this HWND; prevents silently accepting a reused window handle.
+    #[schemars(range(min = 1, max = u32::MAX))]
     pub pid: u32,
 }
 impl TargetWindow {
@@ -36,6 +47,7 @@ impl TargetWindow {
         Ok(())
     }
 }
+/// Physical-pixel coordinates: screen includes negative monitor coordinates; client uses the target client origin.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum CoordinateSpace {
@@ -45,10 +57,14 @@ pub(crate) enum CoordinateSpace {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PointSpec {
+    /// Select physical screen pixels or physical client-area pixels, never screenshot-scaled units.
     pub space: CoordinateSpace,
+    /// Horizontal physical-pixel coordinate. Negative screen coordinates are valid on some monitors.
     pub x: i32,
+    /// Vertical physical-pixel coordinate. The point must be inside a real monitor or target client area.
     pub y: i32,
 }
+/// Explicit cursor-positioning backend. Win32 restrictions still apply; failures never select another backend.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PositionMode {
@@ -90,38 +106,68 @@ impl Button {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum MouseAction {
+    /// Submit a relative HID movement. dx and dy must not both be zero.
     MoveRelative {
+        /// Horizontal HID counts, not pixels; application settings can affect the resulting movement.
         dx: i16,
+        /// Vertical HID counts, not pixels.
         dy: i16,
     },
     MoveTo {
+        /// Destination in physical screen or target client-area pixels.
         at: PointSpec,
+        /// Positioning backend. Omitted or null selects driver; failures never switch backends.
+        #[schemars(extend("default" = "driver"))]
         mode: Option<PositionMode>,
     },
     Click {
+        /// Click location. It must be visible on and hit the foreground target's root window.
         at: PointSpec,
+        /// Mouse button. Omitted or null selects left.
+        #[schemars(extend("default" = "left"))]
         button: Option<Button>,
+        /// One click or a double click. Omitted or null selects one.
+        #[schemars(range(min = 1, max = 2), extend("default" = 1))]
         clicks: Option<u8>,
+        /// Button-down duration in milliseconds, 1..=5000. Omitted or null selects 20.
+        #[schemars(range(min = 1, max = MAX_HOLD_MS), extend("default" = DEFAULT_HOLD_MS))]
         hold_ms: Option<u64>,
+        /// Positioning backend. Omitted or null selects driver.
+        #[schemars(extend("default" = "driver"))]
         mode: Option<PositionMode>,
     },
     Scroll {
+        /// Nonzero signed HID wheel increment, not pixels or lines. The target interprets its size.
+        #[schemars(extend("not" = { "const": 0 }))]
         delta: i8,
+        /// Optional physical-pixel location to move to before scrolling; otherwise use the current cursor.
         at: Option<PointSpec>,
+        /// Positioning backend, used only when at is supplied. Omitted or null selects driver.
+        #[schemars(extend("default" = "driver"))]
         mode: Option<PositionMode>,
     },
     Drag {
+        /// Physical-pixel drag start, which must hit the foreground target's root window.
         from: PointSpec,
+        /// Physical-pixel drag destination, which must also hit the target's root window.
         to: PointSpec,
+        /// Button held during the entire drag. Omitted or null selects left.
+        #[schemars(extend("default" = "left"))]
         button: Option<Button>,
+        /// Delay in milliseconds after pressing the button, 1..=5000. Omitted or null selects 20.
+        #[schemars(range(min = 1, max = MAX_HOLD_MS), extend("default" = DEFAULT_HOLD_MS))]
         hold_ms: Option<u64>,
+        /// Positioning backend for both endpoints. Omitted or null selects driver.
+        #[schemars(extend("default" = "driver"))]
         mode: Option<PositionMode>,
     },
 }
 impl MouseAction {
     pub fn hold_ms(&self) -> u64 {
         match self {
-            Self::Click { hold_ms, .. } | Self::Drag { hold_ms, .. } => hold_ms.unwrap_or(20),
+            Self::Click { hold_ms, .. } | Self::Drag { hold_ms, .. } => {
+                hold_ms.unwrap_or(DEFAULT_HOLD_MS)
+            }
             _ => 0,
         }
     }
@@ -138,16 +184,29 @@ impl MouseAction {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct MouseParams {
+    /// Exact foreground window identity obtained from a fresh desktop observation.
     pub target: TargetWindow,
+    /// One bounded mouse action; input is desktop-wide, not isolated to this window.
     pub action: MouseAction,
+    /// Total initialization and execution budget in milliseconds, 1..=30000; defaults to 10000.
+    /// Must not be shorter than hold_ms. Cancellation cannot interrupt a blocked native call.
+    #[schemars(range(min = 1, max = MAX_TIMEOUT_MS), extend("default" = DEFAULT_TIMEOUT_MS))]
     pub timeout_ms: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct KeyParams {
+    /// Exact foreground window identity obtained from a fresh desktop observation.
     pub target: TargetWindow,
+    /// Keys pressed in order and released in reverse. No duplicates; at most six ordinary keys and eight modifiers.
+    #[schemars(length(min = 1, max = 14), extend("uniqueItems" = true))]
     pub keys: Vec<KeyName>,
+    /// Key-down duration in milliseconds, 1..=5000. Omitted or null selects 20.
+    #[schemars(range(min = 1, max = MAX_HOLD_MS), extend("default" = DEFAULT_HOLD_MS))]
     pub hold_ms: Option<u64>,
+    /// Total initialization and execution budget in milliseconds, 1..=30000; defaults to 10000.
+    /// Must not be shorter than hold_ms. Cancellation cannot interrupt a blocked native call.
+    #[schemars(range(min = 1, max = MAX_TIMEOUT_MS), extend("default" = DEFAULT_TIMEOUT_MS))]
     pub timeout_ms: Option<u64>,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -173,9 +232,17 @@ impl TextInputMode {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TextParams {
+    /// Exact foreground window identity obtained from a fresh desktop observation.
     pub target: TargetWindow,
+    /// Text of at most 1024 Unicode scalars, without NUL. Empty text submits no input.
+    /// HID mapping can fail after typing a prefix; never retry automatically.
+    #[schemars(length(max = MAX_TEXT_SCALARS), pattern(r"^[^\u0000]*$"))]
     pub text: String,
+    /// Required layout or Win32 Unicode path. Unicode is not HID; nonempty input still initializes G HUB devices.
     pub mode: TextInputMode,
+    /// Total initialization and execution budget in milliseconds, 1..=30000; defaults to 10000.
+    /// Cancellation cannot interrupt a blocked native call.
+    #[schemars(range(min = 1, max = MAX_TIMEOUT_MS), extend("default" = DEFAULT_TIMEOUT_MS))]
     pub timeout_ms: Option<u64>,
 }
 
@@ -216,7 +283,7 @@ impl InputRequest {
             Self::Key(p) => p.timeout_ms,
             Self::Text(p) => p.timeout_ms,
         }
-        .unwrap_or(10_000)
+        .unwrap_or(DEFAULT_TIMEOUT_MS)
     }
     pub fn is_empty(&self) -> bool {
         matches!(self, Self::Text(p) if p.text.is_empty())
@@ -224,7 +291,7 @@ impl InputRequest {
     pub fn validate(&self) -> Result<(), ToolFailure> {
         self.target().validate()?;
         let timeout = self.timeout_ms();
-        if !(1..=30_000).contains(&timeout) {
+        if !(1..=MAX_TIMEOUT_MS).contains(&timeout) {
             return Err(invalid("timeout_ms must be between 1 and 30000"));
         }
         let hold = match self {
@@ -247,10 +314,10 @@ impl InputRequest {
                 if ordinary > 6 {
                     return Err(invalid("at most six non-modifier keys are allowed"));
                 }
-                Some(p.hold_ms.unwrap_or(20))
+                Some(p.hold_ms.unwrap_or(DEFAULT_HOLD_MS))
             }
             Self::Text(p) => {
-                if p.text.chars().take(1025).count() > 1024 {
+                if p.text.chars().take(MAX_TEXT_SCALARS + 1).count() > MAX_TEXT_SCALARS {
                     return Err(invalid("text exceeds 1024 Unicode scalars"));
                 }
                 if p.text.contains('\0') {
@@ -273,7 +340,7 @@ impl InputRequest {
             },
         };
         if let Some(hold) = hold {
-            if !(1..=5000).contains(&hold) {
+            if !(1..=MAX_HOLD_MS).contains(&hold) {
                 return Err(invalid("hold_ms must be between 1 and 5000"));
             }
             if timeout < hold {

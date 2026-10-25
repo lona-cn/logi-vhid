@@ -1,0 +1,45 @@
+{
+  "manifest_version": "0.3",
+  "name": "logi-vhid-mcp",
+  "display_name": "logi-vhid MCP",
+  "version": "0.1.1",
+  "description": "Windows x64 local desktop input and coordinate queries through Logitech virtual HID.",
+  "long_description": "Six local stdio MCP tools for status, desktop coordinates, mouse, keyboard, text and stop. Input is disabled by default. Enabling input only grants capability: the host must obtain approval for each operation. Requires a compatible Logitech G HUB virtual HID bus for HID input; no driver or G HUB installer is bundled. Screenshots, remote HTTP and OAuth are not provided. Desktop-wide input is not isolated to a window, and submission is not application acknowledgement. Host compatibility and hardware acceptance must be verified separately.",
+  "author": {
+    "name": "lona-cn",
+    "url": "https://github.com/lona-cn"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lona-cn/logi-vhid"
+  },
+  "homepage": "https://github.com/lona-cn/logi-vhid",
+  "documentation": "https://github.com/lona-cn/logi-vhid/blob/master/crates/logi-vhid-mcp/README.md",
+  "support": "https://github.com/lona-cn/logi-vhid/issues",
+  "license": "MIT",
+  "privacy_policies": [
+    "https://github.com/lona-cn/logi-vhid/blob/master/docs/privacy.md"
+  ],
+  "icon": "icon.png",
+  "server": {
+    "type": "binary",
+    "entry_point": "server/logi-vhid-mcp.exe",
+    "mcp_config": {
+      "command": "${__dirname}/server/logi-vhid-mcp.exe",
+      "args": ["--allow-input=${user_config.allow_input}"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["win32"]
+  },
+  "user_config": {
+    "allow_input": {
+      "type": "boolean",
+      "title": "Allow keyboard and mouse input",
+      "description": "Disabled by default. Enable only when you explicitly want this service to accept input requests. The host must still approve each exact target, action and value; this setting never enables automatic approval.",
+      "default": false,
+      "required": false
+    }
+  },
+  "keywords": ["windows", "local", "stdio", "virtual-hid", "desktop-input"]
+}

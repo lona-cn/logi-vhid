@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -28,10 +29,14 @@ class ReleaseTests(unittest.TestCase):
         self.sdk = self.dist / "logi-vhid-1.2.3-windows-x86_64-msvc.zip"
         self.wheel = self.dist / "logi_vhid-1.2.3-py3-none-win_amd64.whl"
         self.mcp = self.dist / "logi-vhid-mcp-1.2.3-windows-x86_64-msvc.exe"
+        self.bundle = self.dist / "logi-vhid-mcp-1.2.3-windows-x86_64-msvc.mcpb"
+        self.registry = self.dist / "server.json"
         self.dll = b"isolated native artifact fixture\x00"
         self.write_sdk()
         self.write_wheel()
         self.mcp.write_bytes(b"isolated MCP executable fixture\x00")
+        self.write_bundle()
+        self.write_registry()
         self.write_checksums()
 
     def write_sdk(self, extra=None):
@@ -63,9 +68,71 @@ class ReleaseTests(unittest.TestCase):
             for name, data in members.items():
                 archive.writestr(name, data)
 
+    def bundle_manifest(self):
+        repository = "https://github.com/lona-cn/logi-vhid"
+        return {
+            "manifest_version": "0.3", "name": "logi-vhid-mcp", "version": "1.2.3",
+            "description": "Windows desktop input and coordinate queries",
+            "author": {"name": "lona-cn"},
+            "repository": {"type": "git", "url": repository},
+            "homepage": repository,
+            "documentation": repository + "/blob/master/crates/logi-vhid-mcp/README.md",
+            "support": repository + "/issues", "license": "MIT", "icon": "icon.png",
+            "privacy_policies": [repository + "/blob/master/docs/privacy.md"],
+            "server": {
+                "type": "binary", "entry_point": "server/logi-vhid-mcp.exe",
+                "mcp_config": {
+                    "command": "${__dirname}/server/logi-vhid-mcp.exe",
+                    "args": ["--allow-input=${user_config.allow_input}"],
+                },
+            },
+            "compatibility": {"platforms": ["win32"]},
+            "user_config": {"allow_input": {
+                "type": "boolean", "title": "Allow keyboard and mouse input",
+                "description": "Disabled by default; host approval is still required.",
+                "default": False, "required": False,
+            }},
+        }
+
+    def write_bundle(self, *, manifest_changes=None, extra=None):
+        manifest = self.bundle_manifest()
+        manifest.update(manifest_changes or {})
+        members = {
+            "manifest.json": json.dumps(manifest).encode(),
+            "server/logi-vhid-mcp.exe": self.mcp.read_bytes(),
+            "icon.png": b"isolated icon fixture",
+            "LICENSE": b"MIT fixture",
+            "README.md": b"MCP-specific documentation fixture",
+        }
+        members.update(extra or {})
+        with zipfile.ZipFile(self.bundle, "w") as archive:
+            for name, data in members.items():
+                archive.writestr(name, data)
+
+    def write_registry(self, *, package_changes=None):
+        package = {
+            "registryType": "mcpb",
+            "identifier": "https://github.com/lona-cn/logi-vhid/releases/download/v1.2.3/"
+                          "logi-vhid-mcp-1.2.3-windows-x86_64-msvc.mcpb",
+            "version": "1.2.3",
+            "fileSha256": hashlib.sha256(self.bundle.read_bytes()).hexdigest(),
+            "transport": {"type": "stdio"},
+        }
+        package.update(package_changes or {})
+        metadata = {
+            "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+            "name": "io.github.lona-cn/logi-vhid-mcp", "title": "logi-vhid MCP",
+            "description": "Windows desktop input and coordinate queries",
+            "repository": {"url": "https://github.com/lona-cn/logi-vhid",
+                           "source": "github", "subfolder": "crates/logi-vhid-mcp"},
+            "websiteUrl": "https://github.com/lona-cn/logi-vhid/tree/master/crates/logi-vhid-mcp",
+            "version": "1.2.3", "packages": [package],
+        }
+        self.registry.write_text(json.dumps(metadata), encoding="utf-8")
+
     def write_checksums(self):
         lines = []
-        for artifact in (self.sdk, self.wheel, self.mcp):
+        for artifact in (self.sdk, self.wheel, self.mcp, self.bundle, self.registry):
             digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
             lines.append(f"{digest}  {artifact.name}\n")
         (self.dist / "SHA256SUMS").write_text("".join(lines), encoding="utf-8")
@@ -78,7 +145,126 @@ class ReleaseTests(unittest.TestCase):
             patch.object(release.subprocess, "run", side_effect=AssertionError("native tool invoked")),
             patch.object(release.subprocess, "Popen", side_effect=AssertionError("executable started")),
         ):
-            self.assertEqual(self.verify(), (self.sdk, self.wheel, self.mcp))
+            self.assertEqual(self.verify(), (self.sdk, self.wheel, self.mcp, self.bundle, self.registry))
+
+    def test_unexpected_corrupt_mcp_bundle_is_not_ignored(self):
+        (self.dist / "logi-vhid-mcp-9.9.9-windows-x86_64-msvc.mcpb").write_bytes(
+            b"not a valid native MCP bundle"
+        )
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_native_bundle_generation_uses_release_version_and_mcp_readme(self):
+        source = self.root / "crates/logi-vhid-mcp"
+        source.mkdir(parents=True)
+        manifest = self.bundle_manifest()
+        manifest["version"] = "0.0.1"
+        (source / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        template = json.loads(self.registry.read_text(encoding="utf-8"))
+        template.pop("version")
+        template.pop("packages")
+        template["$comment"] = "Build input only, not a publishable server.json."
+        (source / "server.template.json").write_text(json.dumps(template), encoding="utf-8")
+        (source / "README.md").write_bytes(b"MCP-specific generated package instructions")
+        (source / "icon.png").write_bytes(b"generated icon fixture")
+        (self.root / "LICENSE").write_bytes(b"MIT generated fixture")
+        release.build_mcp_distribution("1.2.3", self.mcp, self.dist, root=self.root)
+        self.write_checksums()
+        self.verify()
+        with zipfile.ZipFile(self.bundle) as archive:
+            self.assertEqual(archive.read("README.md"), b"MCP-specific generated package instructions")
+        self.assertNotIn("$comment", json.loads(self.registry.read_text(encoding="utf-8")))
+
+    def test_bundle_missing_or_corrupt_is_rejected(self):
+        self.bundle.unlink()
+        with self.assertRaises(ValueError):
+            self.verify()
+        self.bundle.write_bytes(b"not a ZIP")
+        self.write_registry()
+        self.write_checksums()
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_bundle_manifest_must_preserve_identity_and_safe_launch(self):
+        for change in (
+            {"version": "1.2.4"},
+            {"description": ""},
+            {"license": "Proprietary"},
+            {"server": {"type": "node", "entry_point": "server/logi-vhid-mcp.exe",
+                        "mcp_config": {"command": "node", "args": []}}},
+            {"compatibility": {"platforms": ["linux"]}},
+            {"user_config": {"allow_input": {
+                "type": "boolean", "title": "Allow input", "description": "Unsafe default",
+                "default": True, "required": False}}},
+        ):
+            with self.subTest(change=change):
+                self.write_bundle(manifest_changes=change)
+                self.write_registry()
+                self.write_checksums()
+                with self.assertRaises(ValueError):
+                    self.verify()
+
+    def test_bundle_executable_must_match_the_independent_executable(self):
+        self.write_bundle(extra={"server/logi-vhid-mcp.exe": b"replaced executable"})
+        self.write_registry()
+        self.write_checksums()
+        with self.assertRaises(ValueError):
+            self.verify()
+
+    def test_bundle_rejects_unsafe_or_unexpected_members(self):
+        for member in ("../escaped.txt", "SERVER/LOGI-VHID-MCP.EXE", "launcher.py"):
+            with self.subTest(member=member):
+                self.write_bundle(extra={member: b"unexpected content"})
+                self.write_registry()
+                self.write_checksums()
+                with self.assertRaises(ValueError):
+                    self.verify()
+        self.assertFalse((self.root / "escaped.txt").exists())
+
+    def test_registry_must_bind_the_exact_bundle_and_stdio_transport(self):
+        for change in (
+            {"fileSha256": "0" * 64},
+            {"identifier": "https://github.com/lona-cn/logi-vhid/releases/download/v1.2.4/other.mcpb"},
+            {"transport": {"type": "streamable-http", "url": "https://example.org/mcp"}},
+        ):
+            with self.subTest(change=change):
+                self.write_registry(package_changes=change)
+                self.write_checksums()
+                with self.assertRaises(ValueError):
+                    self.verify()
+
+    def test_registry_missing_corrupt_or_incomplete_is_rejected(self):
+        original = self.registry.read_bytes()
+        self.registry.unlink()
+        with self.assertRaises(ValueError):
+            self.verify()
+        for payload in (b"{", b"[]", b'{"version":"1.2.3"}'):
+            with self.subTest(payload=payload):
+                self.registry.write_bytes(payload)
+                self.write_checksums()
+                with self.assertRaises(ValueError):
+                    self.verify()
+        self.registry.write_bytes(original)
+
+    def test_registry_rejects_wrong_version_or_missing_static_metadata(self):
+        original = json.loads(self.registry.read_text(encoding="utf-8"))
+        for key, value in (("version", "1.2.4"), ("repository", None), ("description", "")):
+            with self.subTest(field=key):
+                metadata = dict(original)
+                metadata[key] = value
+                self.registry.write_text(json.dumps(metadata), encoding="utf-8")
+                self.write_checksums()
+                with self.assertRaises(ValueError):
+                    self.verify()
+
+    def test_bundle_requires_nonempty_documentation_and_metadata(self):
+        for member in ("manifest.json", "LICENSE", "README.md", "icon.png"):
+            with self.subTest(member=member):
+                self.write_bundle(extra={member: b""})
+                self.write_registry()
+                self.write_checksums()
+                with self.assertRaises(ValueError):
+                    self.verify()
 
     def test_tag_mismatch_is_rejected_before_any_build_process(self):
         with self.assertRaises(ValueError):
@@ -127,6 +313,8 @@ class ReleaseTests(unittest.TestCase):
                 "logi-vhid-1.2.3-rc.4-windows-x86_64-msvc.zip",
                 "logi_vhid-1.2.3rc4-py3-none-win_amd64.whl",
                 "logi-vhid-mcp-1.2.3-rc.4-windows-x86_64-msvc.exe",
+                "logi-vhid-mcp-1.2.3-rc.4-windows-x86_64-msvc.mcpb",
+                "server.json",
             ),
         )
 
